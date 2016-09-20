@@ -1,14 +1,17 @@
 package spark.jobserver
 
-import java.io.File
+import java.io.{File, IOException}
+import java.nio.charset.Charset
+import java.nio.file.{Files, Paths}
 
-import akka.actor.{AddressFromURIString, Address, Props, ActorSystem}
+import akka.actor.{ActorSystem, Address, AddressFromURIString, Props}
 import akka.cluster.Cluster
-import com.typesafe.config.{ConfigValueFactory, ConfigFactory, Config}
+import com.typesafe.config.{Config, ConfigFactory, ConfigValueFactory}
 import ooyala.common.akka.actor.ProductionReaper
 import ooyala.common.akka.actor.Reaper.WatchMe
 import org.slf4j.LoggerFactory
-import spark.jobserver.io.{JobDAOActor, JobDAO}
+import spark.jobserver.io.{JobDAO, JobDAOActor}
+import scala.collection.JavaConverters._
 
 /**
  * The JobManager is the main entry point for the forked JVM process running an individual
@@ -22,20 +25,33 @@ object JobManager {
 
   // Allow custom function to create ActorSystem.  An example of why this is useful:
   // we can have something that stores the ActorSystem so it could be shut down easily later.
+  // Args: workDir contextContent clusterAddress
   def start(args: Array[String], makeSystem: Config => ActorSystem) {
-    val clusterAddress = AddressFromURIString.parse(args(1))
-    val workDir = args(0)
-    val contextPath = new java.io.File(workDir + "/context.conf")
-    if (!contextPath.exists()) {
-      System.err.println(s"Could not find context configuration file $contextPath")
-      sys.exit(1)
+    val clusterAddress = AddressFromURIString.parse(args(2))
+    val workDir = Paths.get(args(0))
+    try {
+      if (!Files.exists(workDir)) {
+        System.err.println(s"WorkDir $workDir does not exist, exit.")
+        sys.exit(1)
+      }
+      // Write out the config to the work dir
+      Files.write(workDir.resolve("context.conf"),
+        Seq(args(1)).asJava,
+        Charset.forName("UTF-8"))
+      // Set system property LOG_DIR
+      System.setProperty("LOG_DIR", args(0))
+    } catch {
+      case e: IOException =>
+        System.err.println(s"Write context config into temp work directory $workDir, error: ${e.getMessage}")
+        sys.exit(1)
     }
-    val contextConfig = ConfigFactory.parseFile(contextPath)
+
+    val contextConfig = ConfigFactory.parseString(args(1))
     val managerName = contextConfig.getString("context.actorname")
 
     val defaultConfig = ConfigFactory.load()
-    val config = if (args.length > 2) {
-      val configFile = new File(args(2))
+    val config = if (args.length > 3) {
+      val configFile = new File(args(3))
       if (!configFile.exists()) {
         System.err.println("Could not find configuration file " + configFile)
         sys.exit(1)

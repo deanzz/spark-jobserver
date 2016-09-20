@@ -83,6 +83,7 @@ class JobSqlDAO(config: Config) extends JobDAO {
   val db = Database.forDataSource(dataSource)
   // TODO: migrateLocations should be removed when tests have a running configuration
   val migrateLocations = config.getString("flyway.locations")
+  val initOnMigrate = config.getBoolean("flyway.initOnMigrate")
 
   // Server initialization
   init()
@@ -100,6 +101,7 @@ class JobSqlDAO(config: Config) extends JobDAO {
     flyway.setDataSource(jdbcUrl, jdbcUser, jdbcPassword)
     // TODO: flyway.setLocations(migrateLocations) should be removed when tests have a running configuration
     flyway.setLocations(migrateLocations)
+    flyway.setBaselineOnMigrate(initOnMigrate)
     flyway.migrate()
   }
 
@@ -145,6 +147,7 @@ class JobSqlDAO(config: Config) extends JobDAO {
   override def retrieveJarFile(appName: String, uploadTime: DateTime): String = {
     val jarFile = new File(rootDir, createJarName(appName, uploadTime) + ".jar")
     if (!jarFile.exists()) {
+      logger.info("JarFile does not exist at {}", jarFile.getAbsolutePath)
       fetchAndCacheJarFile(appName, uploadTime)
     }
     jarFile.getAbsolutePath
@@ -153,6 +156,7 @@ class JobSqlDAO(config: Config) extends JobDAO {
   // Fetch the jar file from database and cache it into local file system.
   private def fetchAndCacheJarFile(appName: String, uploadTime: DateTime) {
     val jarBytes = fetchJar(appName, uploadTime)
+    logger.info("Jar fetched from db, size {}", jarBytes.size)
     cacheJar(appName, uploadTime, jarBytes)
   }
 

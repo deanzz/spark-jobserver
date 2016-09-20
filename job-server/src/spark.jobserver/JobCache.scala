@@ -25,7 +25,7 @@ class JobCache(maxEntries: Int, dao: ActorRef, sparkContext: SparkContext, loade
 
   private val cache = new LRUCache[(String, DateTime, String), JobJarInfo](maxEntries)
   private val logger = LoggerFactory.getLogger(getClass)
-  implicit val daoAskTimeout: Timeout = Timeout(3 seconds)
+  implicit val daoAskTimeout: Timeout = Timeout(60 seconds)
 
   /**
    * Retrieves the given SparkJob class from the cache if it's there, otherwise use the DAO to retrieve it.
@@ -38,8 +38,11 @@ class JobCache(maxEntries: Int, dao: ActorRef, sparkContext: SparkContext, loade
       import akka.pattern.ask
       import scala.concurrent.Await
 
+      logger.info("Begin to get jar path for app {}, uploadTime {} from dao {}", appName,
+        uploadTime, dao.path.toSerializationFormat)
       val jarPathReq = (dao ? JobDAOActor.GetJarPath(appName, uploadTime)).mapTo[JobDAOActor.JarPath]
       val jarPath = Await.result(jarPathReq, daoAskTimeout.duration).jarPath
+      logger.info("End of get jar path for app {}, uploadTime {}, jarPath {}", appName, uploadTime, jarPath)
       val jarFilePath = new java.io.File(jarPath).getAbsolutePath()
       sparkContext.addJar(jarFilePath) // Adds jar for remote executors
       loader.addURL(new URL("file:" + jarFilePath)) // Now jar added for local loader
