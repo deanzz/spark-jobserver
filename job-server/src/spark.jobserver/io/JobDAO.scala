@@ -89,4 +89,12 @@ trait JobDAO {
    */
   def getLastUploadTime(appName: String): Option[DateTime] =
     getApps.get(appName)
+
+  /**
+    * Return the jar content for remote driver and JobManagerActor to submit
+    * @param appName
+    * @param updateTime
+    * @return Binary jar content
+    */
+  def getBinaryJar(appName: String, uploadTime: DateTime): Array[Byte] = Array.empty[Byte]
 }

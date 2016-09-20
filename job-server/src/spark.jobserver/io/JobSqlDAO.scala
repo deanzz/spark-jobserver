@@ -1,12 +1,15 @@
 package spark.jobserver.io
 
-import com.typesafe.config.{ConfigRenderOptions, Config, ConfigFactory}
-import java.io.{FileOutputStream, BufferedOutputStream, File}
+import com.typesafe.config.{Config, ConfigFactory, ConfigRenderOptions}
+import java.io._
+import java.nio.file.{Files, Paths}
 import java.sql.Timestamp
 import javax.sql.DataSource
+
 import org.flywaydb.core.Flyway
 import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
+
 import scala.slick.driver.JdbcProfile
 import scala.reflect.runtime.universe
 import org.apache.commons.dbcp.BasicDataSource
@@ -144,10 +147,27 @@ class JobSqlDAO(config: Config) extends JobDAO {
     }
   }
 
+  override /**
+    * Return the jar content for remote driver and JobManagerActor to submit
+    *
+    * @param appName
+    * @param updateTime
+    * @return Binary jar content
+    */
+  def getBinaryJar(appName: String, uploadTime: DateTime): Array[Byte] = {
+    val jarFile = new File(rootDir, createJarName(appName, uploadTime) + ".jar")
+    if (!jarFile.exists()) {
+      val jarBytes = fetchJar(appName, uploadTime)
+      cacheJar(appName, uploadTime, jarBytes)
+      jarBytes
+    }else{
+      Files.readAllBytes(Paths.get(jarFile.getAbsolutePath))
+    }
+  }
+
   override def retrieveJarFile(appName: String, uploadTime: DateTime): String = {
     val jarFile = new File(rootDir, createJarName(appName, uploadTime) + ".jar")
     if (!jarFile.exists()) {
-      logger.info("JarFile does not exist at {}", jarFile.getAbsolutePath)
       fetchAndCacheJarFile(appName, uploadTime)
     }
     jarFile.getAbsolutePath
@@ -156,7 +176,6 @@ class JobSqlDAO(config: Config) extends JobDAO {
   // Fetch the jar file from database and cache it into local file system.
   private def fetchAndCacheJarFile(appName: String, uploadTime: DateTime) {
     val jarBytes = fetchJar(appName, uploadTime)
-    logger.info("Jar fetched from db, size {}", jarBytes.size)
     cacheJar(appName, uploadTime, jarBytes)
   }
 

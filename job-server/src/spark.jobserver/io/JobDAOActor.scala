@@ -14,6 +14,7 @@ object JobDAOActor {
   case class SaveJar(appName: String, uploadTime: DateTime, jarBytes: Array[Byte]) extends JobDAORequest
   case object GetApps extends JobDAORequest
   case class GetJarPath(appName: String, uploadTime: DateTime) extends JobDAORequest
+  case class GetBinaryJar(appName: String, uploadTime: DateTime) extends JobDAORequest
 
   case class SaveJobInfo(jobInfo: JobInfo) extends JobDAORequest
   case class GetJobInfos(limit: Int) extends JobDAORequest
@@ -27,6 +28,7 @@ object JobDAOActor {
   sealed trait JobDAOResponse
   case class Apps(apps: Map[String, DateTime]) extends JobDAOResponse
   case class JarPath(jarPath: String) extends JobDAOResponse
+  case class BinaryJar(jar: Array[Byte]) extends JobDAOResponse
   case class JobInfos(jobInfos: Seq[JobInfo]) extends JobDAOResponse
   case class JobConfigs(jobConfigs: Map[String, Config]) extends JobDAOResponse
   case class LastUploadTime(lastUploadTime: Option[DateTime]) extends JobDAOResponse
@@ -64,5 +66,8 @@ class JobDAOActor(dao:JobDAO) extends InstrumentedActor {
 
     case GetLastUploadTime(appName) =>
       sender() ! LastUploadTime(dao.getLastUploadTime(appName))
+
+    case GetBinaryJar(appName, uploadTime) =>
+      sender() ! BinaryJar(dao.getBinaryJar(appName,uploadTime))
   }
 }
