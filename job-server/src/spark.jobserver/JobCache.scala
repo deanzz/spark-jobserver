@@ -1,8 +1,8 @@
 package spark.jobserver
 
-import java.io.{BufferedOutputStream, File, FileOutputStream}
+import java.io.{BufferedOutputStream, File, FileOutputStream, IOException}
 import java.net.URL
-import java.nio.file.{Files, Paths}
+import java.nio.file.{Files, Paths, StandardOpenOption}
 
 import akka.actor.ActorRef
 import akka.util.Timeout
@@ -51,8 +51,15 @@ class JobCache(maxEntries: Int, dao: ActorRef, sparkContext: SparkContext, loade
         logger.info("Local jar path {} not exist, fetch binary content from remote actor", jarPath)
         val jarBinaryReq = (dao ? JobDAOActor.GetBinaryJar(appName, uploadTime)).mapTo[JobDAOActor.BinaryJar]
         val binaryJar = Await.result(jarBinaryReq, daoAskTimeout.duration)
-        logger.debug("Writing {} bytes to file {}", binaryJar.jar.size, jarFile.toAbsolutePath.toString)
-        Files.write(jarFile,binaryJar.jar)
+        logger.info("Writing {} bytes to file {}", binaryJar.jar.size, jarFile.toAbsolutePath.toString)
+        try {
+          if (!Files.exists(jarFile.getParent)){
+            Files.createDirectories(jarFile.getParent)
+          }
+          Files.write(jarFile,binaryJar.jar)
+        }catch {
+          case e: IOException => logger.error("Write to path {} error {}", jarPath: Any, e)
+        }
       }
       val jarFilePath = jarFile.toAbsolutePath.toString
       sparkContext.addJar(jarFilePath) // Adds jar for remote executors
