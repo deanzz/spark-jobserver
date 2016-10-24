@@ -54,6 +54,7 @@ class JobCache(maxEntries: Int, dao: ActorRef, sparkContext: SparkContext, loade
         logger.info("Writing {} bytes to file {}", binaryJar.jar.size, jarFile.toAbsolutePath.toString)
         try {
           if (!Files.exists(jarFile.getParent)){
+            logger.info("Creating cache dir {}", jarFile.getParent.toAbsolutePath.toString)
             Files.createDirectories(jarFile.getParent)
           }
           Files.write(jarFile,binaryJar.jar)
