@@ -142,7 +142,7 @@ class WebApi(system: ActorSystem,
   val myRoutes = cors {
     overrideMethodWithParameter("_method") {
       binaryRoutes ~ jarRoutes ~ contextRoutes ~ jobRoutes ~
-        dataRoutes ~ healthzRoutes ~ otherRoutes
+        dataRoutes ~ healthzRoutes ~ otherRoutes ~ configRoutes
     }
   }
 
@@ -378,6 +378,9 @@ class WebApi(system: ActorSystem,
          *            "spark.context-settings" block containing spark configs for the context.
          * @optional @param num-cpu-cores Int - Number of cores the context will use
          * @optional @param memory-per-node String - -Xmx style string (512m, 1g, etc)
+         * @optional @param driver-cores Int - Number of cores the driver will use
+         * @optional @param driver-memory String - Xmx style string (512m, 1g, etc)
+         * @optional @param mesos-dispatcher String - mesos spark driver dispatcher(mesos://IP:7077)
          * for max memory per node
          * @return the string "OK", or error if context exists or could not be initialized
          */
@@ -479,6 +482,14 @@ class WebApi(system: ActorSystem,
     } ~ pathPrefix("html") {
       // Static files needed by index.html
       getFromResourceDirectory("html")
+    }
+  }
+
+  def configRoutes: Route = get {
+    path("config") {
+      respondWithMediaType(MediaTypes.`application/json`) { ctx =>
+        ctx.complete(config.root().render(ConfigRenderOptions.concise()))
+      }
     }
   }
 

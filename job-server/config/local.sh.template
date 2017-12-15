@@ -32,3 +32,4 @@ SCALA_VERSION=2.10.4 # or 2.11.6
 
 # optional:
 # REMOTE_JOBSERVER_DIR=file://... or hdfs://...
+# MESOS_CLUSTER_DISPATCHER=mesos://XXX:7077

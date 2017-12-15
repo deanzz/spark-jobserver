@@ -241,7 +241,31 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       Map("is-adhoc" -> isAdHoc.toString, "context.name" -> name).asJava
     ).withFallback(contextConfig)
 
-    var managerArgs = Seq(master, deployMode, selfAddress.toString, contextActorName, contextDir.toString)
+    var managerArgs = Seq(master, deployMode, selfAddress.toString, contextActorName, contextDir.toString,
+      config.getString("spark.jobserver.port"))
+    // Add driver cores and memory argument
+    if (contextConfig.hasPath("driver-cores")) {
+      managerArgs = managerArgs :+ contextConfig.getString("driver-cores")
+    } else {
+      managerArgs = managerArgs :+ "1"
+    }
+    if (contextConfig.hasPath("driver-memory")) {
+      managerArgs = managerArgs :+ contextConfig.getString("driver-memory")
+    } else {
+      managerArgs = managerArgs :+ "0"
+    }
+
+    // Add mesos dispatcher address to arguments
+    if (contextConfig.hasPath("mesos-dispatcher")) {
+      managerArgs = managerArgs :+ contextConfig.getString("mesos-dispatcher")
+    } else {
+      managerArgs = managerArgs :+ "DEFAULT_MESOS_DISPATCHER"
+    }
+
+    //Final argument array: master, deployMode, clusterAddress, contextActorname, contextDir, httpPort,
+    //  driverCores, driverMemory, mesosClusterDispatcher, Option[PROXY]
+    //Notice! The spark.master and MesosClusterDispatcher is not the same, we need BOTH in mesos cluster mode
+    logger.info("Ready to execute JobManager cmd with arguments : {}", managerArgs.mkString(","))
     // extract spark.proxy.user from contextConfig, if available and pass it to manager start command
     if (contextConfig.hasPath(SparkJobUtils.SPARK_PROXY_USER_PARAM)) {
       managerArgs = managerArgs :+ contextConfig.getString(SparkJobUtils.SPARK_PROXY_USER_PARAM)

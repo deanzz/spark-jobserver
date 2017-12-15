@@ -1,17 +1,15 @@
 package spark.jobserver
 
-import java.io.{File, IOException}
-import java.nio.charset.Charset
-import java.nio.file.{Files, Paths}
+import java.nio.file.Files
 
-import akka.actor.{ActorSystem, Address, AddressFromURIString, Props}
+import akka.actor.{ActorSystem, AddressFromURIString, Props}
 import akka.cluster.Cluster
 import com.typesafe.config.{Config, ConfigFactory, ConfigValueFactory}
-import spark.jobserver.common.akka.actor.Reaper.WatchMe
 import org.slf4j.LoggerFactory
 import spark.jobserver.common.akka.actor.ProductionReaper
+import spark.jobserver.common.akka.actor.Reaper.WatchMe
 import spark.jobserver.io.{JobDAO, JobDAOActor}
-import scala.collection.JavaConverters._
+
 import scala.util.Try
 
 /**
@@ -23,22 +21,25 @@ object JobManager {
 
   // Allow custom function to create ActorSystem.  An example of why this is useful:
   // we can have something that stores the ActorSystem so it could be shut down easily later.
-  // Args: workDir clusterAddress systemConfig
+  // Args: workDir clusterAddress jobServerHttpPort
   // Allow custom function to wait for termination. Useful in tests.
   def start(args: Array[String], makeSystem: Config => ActorSystem,
             waitForTermination: (ActorSystem, String, String) => Unit) {
 
+    logger.info("Start JobManager with args: {}", args.mkString(","))
     val clusterAddress = AddressFromURIString.parse(args(0))
     val managerName = args(1)
-    val systemConfigFile = new File(args(2))
 
-    if (!systemConfigFile.exists()) {
-      System.err.println(s"Could not find system configuration file $systemConfigFile")
+    //Fetch system config from remote job-server rest api
+    if (args.length < 3 || clusterAddress.host.isEmpty) {
+      System.err.println("Could not find job server http address from arguments")
       sys.exit(1)
     }
+    val jobServerAddress = clusterAddress.host.getOrElse("") + ":" + args(2)
+    val configStr = scala.io.Source.fromURL(s"http://$jobServerAddress/config").mkString
 
     val defaultConfig = ConfigFactory.load()
-    val systemConfig = ConfigFactory.parseFile(systemConfigFile).withFallback(defaultConfig)
+    val systemConfig = ConfigFactory.parseString(configStr).withFallback(defaultConfig)
     val master = Try(systemConfig.getString("spark.master")).toOption
       .getOrElse("local[4]").toLowerCase()
     val deployMode = Try(systemConfig.getString("spark.submit.deployMode")).toOption
