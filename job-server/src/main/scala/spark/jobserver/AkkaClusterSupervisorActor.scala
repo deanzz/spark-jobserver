@@ -8,6 +8,7 @@ import akka.actor._
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp}
 import akka.util.Timeout
+import akka.pattern.ask
 import com.typesafe.config.{Config, ConfigFactory, ConfigRenderOptions}
 import spark.jobserver.util.SparkJobUtils
 
@@ -20,6 +21,7 @@ import scala.concurrent.Await
 import akka.pattern.gracefulStop
 import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
+import spark.jobserver.JobManagerActor.{GetSparkWebUIUrl, NoSparkWebUI, SparkContextDead, SparkWebUIUrl}
 import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
 
 /**
@@ -51,6 +53,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   val defaultContextConfig = config.getConfig("spark.context-settings")
   val contextInitTimeout = config.getDuration("spark.context-settings.context-init-timeout",
                                                 TimeUnit.SECONDS)
+  val contextTimeout = SparkJobUtils.getContextCreationTimeout(config)
   val contextDeletionTimeout = SparkJobUtils.getContextDeletionTimeout(config)
   val managerStartCommand = config.getString("deploy.manager-start-cmd")
   import context.dispatcher
@@ -156,6 +159,21 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         sender ! contexts(name)
       } else {
         sender ! NoSuchContext
+      }
+
+    case GetSparkWebUI(name) =>
+      contexts.get(name) match {
+        case Some((actor, _)) =>
+          val future = (actor ? GetSparkWebUIUrl)(contextTimeout.seconds)
+          val originator = sender
+          future.collect {
+            case SparkWebUIUrl(webUi) => originator ! WebUIForContext(name, Some(webUi))
+            case NoSparkWebUI => originator ! WebUIForContext(name, None)
+            case SparkContextDead =>
+              logger.info("SparkContext {} is dead", name)
+              originator ! NoSuchContext
+          }
+        case _ => sender ! NoSuchContext
       }
 
     case StopContext(name) =>
