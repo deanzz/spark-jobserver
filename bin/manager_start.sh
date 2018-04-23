@@ -70,13 +70,18 @@ else
   SPARK_DRIVER_OPTIONS="$SPARK_DRIVER_OPTIONS --driver-memory $JOBSERVER_MEMORY"
 fi
 
-if [ -n "${10}" ]; then
-  SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --proxy-user ${10}"
+if [ "${10}" != "NULL" ]; then
+  SPARK_DRIVER_OPTIONS="$SPARK_DRIVER_OPTIONS --conf spark.kubernetes.driver.pod.name=${10}"
+fi
+
+if [ -n "${11}" ]; then
+  SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --proxy-user ${11}"
 fi
 
 if [ -n "$JOBSERVER_KEYTAB" ]; then
   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --keytab $JOBSERVER_KEYTAB"
 fi
+
 
 cmd='$SPARK_HOME/bin/spark-submit --class $MAIN $SPARK_DRIVER_OPTIONS
       --conf "spark.executor.extraJavaOptions=$LOGGING_OPTS"

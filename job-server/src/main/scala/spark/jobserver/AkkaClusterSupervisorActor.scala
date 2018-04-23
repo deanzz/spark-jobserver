@@ -246,6 +246,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
     val master = Try(config.getString("spark.master")).toOption.getOrElse("local[4]")
     val deployMode = Try(config.getString("spark.submit.deployMode")).toOption.getOrElse("client")
+    val isKubernetesMode = master.trim.startsWith("k8s")
 
     // Create a temporary dir, preferably in the LOG_DIR
     val encodedContextName = java.net.URLEncoder.encode(name, "UTF-8")
@@ -278,6 +279,12 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       managerArgs = managerArgs :+ contextConfig.getString("mesos-dispatcher")
     } else {
       managerArgs = managerArgs :+ "DEFAULT_MESOS_DISPATCHER"
+    }
+
+    if (isKubernetesMode){
+      managerArgs = managerArgs :+ encodedContextName
+    } else {
+      managerArgs = managerArgs :+ "NULL"
     }
 
     //Final argument array: master, deployMode, clusterAddress, contextActorname, contextDir, httpPort,
