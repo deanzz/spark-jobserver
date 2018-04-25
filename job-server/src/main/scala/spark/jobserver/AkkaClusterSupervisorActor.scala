@@ -282,7 +282,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     }
 
     if (isKubernetesMode){
-      managerArgs = managerArgs :+ encodedContextName
+      managerArgs = managerArgs :+ encodedContextName.toLowerCase
     } else {
       managerArgs = managerArgs :+ "NULL"
     }
