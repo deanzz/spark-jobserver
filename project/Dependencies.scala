@@ -89,4 +89,9 @@ object Dependencies {
     "sonatype snapshots" at "https://oss.sonatype.org/content/repositories/snapshots/",
     "spray repo" at "http://repo.spray.io"
   )
+
+  lazy val acoCommonVersion = "2.12.0-SNAPSHOT"
+  lazy val acoDeps = Seq(
+    "com.kongming.aco" % "aco-common_2.11" % acoCommonVersion
+  )
 }

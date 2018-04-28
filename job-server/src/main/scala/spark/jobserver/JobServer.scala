@@ -1,12 +1,12 @@
 package spark.jobserver
 
-import akka.actor.{ActorSystem, ActorRef}
-import akka.actor.Props
+import akka.actor.{ActorRef, ActorSystem, AddressFromURIString, Props}
 import akka.pattern.ask
-import com.typesafe.config.{ConfigValueFactory, Config, ConfigFactory}
-
+import com.typesafe.config.{Config, ConfigFactory, ConfigValueFactory}
 import java.io.File
-import spark.jobserver.io.{BinaryType, JobDAOActor, JobDAO, DataFileDAO}
+
+import akka.cluster.Cluster
+import spark.jobserver.io.{BinaryType, DataFileDAO, JobDAO, JobDAOActor}
 import org.slf4j.LoggerFactory
 
 import scala.collection.JavaConverters._
@@ -98,6 +98,10 @@ object JobServer {
       logger.info("Embeded H2 server started with base dir {} and URL {}", rootDir, h2.getURL: Any)
     }
 
+    // join aco cluster
+    val clusterAddress = config.getString("aco.cluster.seed-node")
+    Cluster(system).join(AddressFromURIString.parse(clusterAddress))
+
     val ctor = jobDaoClass.getDeclaredConstructor(Class.forName("com.typesafe.config.Config"))
     val jobDAO = ctor.newInstance(config).asInstanceOf[JobDAO]
     val daoActor = system.actorOf(Props(classOf[JobDAOActor], jobDAO), "dao-manager")
@@ -182,7 +186,7 @@ object JobServer {
     import scala.collection.JavaConverters._
     def makeSupervisorSystem(name: String)(config: Config): ActorSystem = {
       val configWithRole = config.withValue("akka.cluster.roles",
-        ConfigValueFactory.fromIterable(List("supervisor").asJava))
+        ConfigValueFactory.fromIterable(List("jobServer", "supervisor").asJava))
       ActorSystem(name, configWithRole)
     }
 

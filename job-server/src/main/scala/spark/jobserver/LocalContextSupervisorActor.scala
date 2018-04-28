@@ -1,5 +1,6 @@
 package spark.jobserver
 
+import aco.spark.context.ContextOperation
 import akka.actor.{ActorRef, PoisonPill, Props, Terminated}
 import akka.pattern.ask
 import akka.util.Timeout
@@ -22,7 +23,10 @@ object ContextSupervisor {
   // Messages/actions
   case object AddContextsFromConfig // Start up initial contexts
   case object ListContexts
-  case class AddContext(name: String, contextConfig: Config)
+  case class AddContext(name: String, contextConfig: Config,
+                        workerActor: Option[ActorRef] = None,
+                        operatorId: Option[String] = None,
+                        operation: Option[ContextOperation] = None)
   case class StartAdHocContext(classPath: String, contextConfig: Config)
   case class GetContext(name: String) // returns JobManager, JobResultActor
   case class GetResultActor(name: String)  // returns JobResultActor
@@ -111,7 +115,7 @@ class LocalContextSupervisorActor(dao: ActorRef, dataManagerActor: ActorRef) ext
         case _ => sender ! NoSuchContext
       }
 
-    case AddContext(name, contextConfig) =>
+    case AddContext(name, contextConfig, _, _, _) =>
       val originator = sender // Sender is a mutable reference, must capture in immutable val
       val mergedConfig = contextConfig.withFallback(defaultContextConfig)
       if (contexts contains name) {

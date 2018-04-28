@@ -1,15 +1,16 @@
 package spark.jobserver
 
 import java.nio.file.{Files, Paths}
-import java.nio.charset.Charset
 import java.util.concurrent.TimeUnit
 
+import aco.spark.jobServer._
+import akka.actor.SupervisorStrategy.Escalate
 import akka.actor._
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp}
 import akka.util.Timeout
 import akka.pattern.ask
-import com.typesafe.config.{Config, ConfigFactory, ConfigRenderOptions}
+import com.typesafe.config.{Config, ConfigFactory}
 import spark.jobserver.util.SparkJobUtils
 
 import scala.collection.mutable
@@ -25,37 +26,38 @@ import spark.jobserver.JobManagerActor.{GetSparkWebUIUrl, NoSparkWebUI, SparkCon
 import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
 
 /**
- * The AkkaClusterSupervisorActor launches Spark Contexts as external processes
- * that connect back with the master node via Akka Cluster.
- *
- * Currently, when the Supervisor gets a MemberUp message from another actor,
- * it is assumed to be one starting up, and it will be asked to identify itself,
- * and then the Supervisor will try to initialize it.
- *
- * See the [[LocalContextSupervisorActor]] for normal config options.  Here are ones
- * specific to this class.
- *
- * ==Configuration==
- * {{{
- *   deploy {
- *     manager-start-cmd = "./manager_start.sh"
- *   }
- * }}}
- */
+  * The AkkaClusterSupervisorActor launches Spark Contexts as external processes
+  * that connect back with the master node via Akka Cluster.
+  *
+  * Currently, when the Supervisor gets a MemberUp message from another actor,
+  * it is assumed to be one starting up, and it will be asked to identify itself,
+  * and then the Supervisor will try to initialize it.
+  *
+  * See the [[LocalContextSupervisorActor]] for normal config options.  Here are ones
+  * specific to this class.
+  *
+  * ==Configuration==
+  * {{{
+  *   deploy {
+  *     manager-start-cmd = "./manager_start.sh"
+  *   }
+  * }}}
+  */
 class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
-    extends InstrumentedActor {
+  extends InstrumentedActor {
 
   import ContextSupervisor._
   import scala.collection.JavaConverters._
   import scala.concurrent.duration._
 
-  val config = context.system.settings.config
-  val defaultContextConfig = config.getConfig("spark.context-settings")
-  val contextInitTimeout = config.getDuration("spark.context-settings.context-init-timeout",
-                                                TimeUnit.SECONDS)
-  val contextTimeout = SparkJobUtils.getContextCreationTimeout(config)
-  val contextDeletionTimeout = SparkJobUtils.getContextDeletionTimeout(config)
-  val managerStartCommand = config.getString("deploy.manager-start-cmd")
+  private val config = context.system.settings.config
+  private val defaultContextConfig = config.getConfig("spark.context-settings")
+  private val contextInitTimeout = config.getDuration("spark.context-settings.context-init-timeout",
+    TimeUnit.SECONDS)
+  private val contextTimeout = SparkJobUtils.getContextCreationTimeout(config)
+  private val contextDeletionTimeout = SparkJobUtils.getContextDeletionTimeout(config)
+  private val managerStartCommand = config.getString("deploy.manager-start-cmd")
+
   import context.dispatcher
 
   //actor name -> (context isadhoc, success callback, failure callback)
@@ -63,7 +65,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   //extra state.  What happens if the WebApi process dies before the forked process
   //starts up?  Then it never gets initialized, and this state disappears.
   private val contextInitInfos = mutable.HashMap.empty[String,
-                                                      (Config, Boolean, ActorRef => Unit, Throwable => Unit)]
+    (Config, Boolean, ActorRef => Unit, Throwable => Unit)]
 
   // actor name -> (JobManagerActor ref, ResultActor ref)
   private val contexts = mutable.HashMap.empty[String, (ActorRef, ActorRef)]
@@ -73,19 +75,28 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
   // This is for capturing results for ad-hoc jobs. Otherwise when ad-hoc job dies, resultActor also dies,
   // and there is no way to retrieve results.
-  val globalResultActor = context.actorOf(Props[JobResultActor], "global-result-actor")
+  private val globalResultActor = context.actorOf(Props[JobResultActor], "global-result-actor")
+  private var acoMonitor: Option[ActorSelection] = None
 
   logger.info("AkkaClusterSupervisor initialized on {}", selfAddress)
 
+
   override def preStart(): Unit = {
-    cluster.join(selfAddress)
+    //cluster.join(selfAddress)
     cluster.subscribe(self, initialStateMode = InitialStateAsEvents, classOf[MemberEvent])
+    logger.info("AkkaClusterSupervisorActor preStart")
   }
 
   override def postStop(): Unit = {
     cluster.unsubscribe(self)
     cluster.leave(selfAddress)
+    logger.info("AkkaClusterSupervisorActor postStop")
   }
+
+  override val supervisorStrategy: OneForOneStrategy =
+    OneForOneStrategy(maxNrOfRetries = 10, withinTimeRange = 1 minute) {
+      case _: Throwable => Escalate
+    }
 
   def wrappedReceive: Receive = {
     case MemberUp(member) =>
@@ -95,21 +106,20 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       }
 
     case ActorIdentity(memberActors, actorRefOpt) =>
-      actorRefOpt.foreach{ actorRef =>
+      actorRefOpt.foreach { actorRef =>
         val actorName = actorRef.path.name
         if (actorName.startsWith("jobManager")) {
           logger.info("Received identify response, attempting to initialize context at {}", memberActors)
-          (for { (contextConfig, isAdHoc, successFunc, failureFunc) <- contextInitInfos.remove(actorName) }
-           yield {
-             initContext(contextConfig, actorName,
-                         actorRef, contextInitTimeout)(isAdHoc, successFunc, failureFunc)
-           }).getOrElse({
+          (for {(contextConfig, isAdHoc, successFunc, failureFunc) <- contextInitInfos.remove(actorName)}
+            yield {
+              initContext(contextConfig, actorName,
+                actorRef, contextInitTimeout)(isAdHoc, successFunc, failureFunc)
+            }).getOrElse({
             logger.warn("No initialization or callback found for jobManager actor {}", actorRef.path)
             actorRef ! PoisonPill
           })
         }
       }
-
 
     case AddContextsFromConfig =>
       addContextsFromConfig(config)
@@ -117,7 +127,13 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     case ListContexts =>
       sender ! contexts.keys.toSeq
 
-    case AddContext(name, contextConfig) =>
+    case AddContextToJobServer(name, operatorId, parameters, operation) =>
+      val requestWorker = sender()
+      val paramMap = parameters2Map(parameters)
+      val contextConfig = ConfigFactory.parseMap(paramMap.asJava)
+      self ! AddContext(name, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
+
+    case AddContext(name, contextConfig, workerActor, operatorId, operation) =>
       val originator = sender()
       val mergedConfig = contextConfig.withFallback(defaultContextConfig)
       // TODO(velvia): This check is not atomic because contexts is only populated
@@ -125,11 +141,27 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       // https://github.com/spark-jobserver/spark-jobserver/issues/349
       if (contexts contains name) {
         originator ! ContextAlreadyExists
+        if (workerActor.isDefined) {
+          val succeed = AddContextToJobServerSucceed(name, contexts(name)._1.path.toString,
+            operatorId.get, s"context $name exists", operation.get)
+          workerActor.get ! succeed
+          acoMonitor.get ! succeed
+        }
       } else {
         startContext(name, mergedConfig, false) { ref =>
           originator ! ContextInitialized
+          if (workerActor.isDefined) {
+            val succeed = AddContextToJobServerSucceed(name, ref.path.toString,
+              operatorId.get, "SUCCESS", operation.get)
+            workerActor.get ! succeed
+            acoMonitor.get ! succeed
+          }
         } { err =>
           originator ! ContextInitError(err)
+          if (workerActor.isDefined) {
+            val errMsg = s"${err.getMessage}\n${err.getStackTrace.map(t => t.toString).mkString("\n")}"
+            workerActor.get ! AddContextToJobServerFailed(name, errMsg, operatorId.get, operation.get)
+          }
         }
       }
 
@@ -164,7 +196,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     case GetSparkWebUI(name) =>
       contexts.get(name) match {
         case Some((actor, _)) =>
-          val future = (actor ? GetSparkWebUIUrl)(contextTimeout.seconds)
+          val future = (actor ? GetSparkWebUIUrl) (contextTimeout.seconds)
           val originator = sender
           future.collect {
             case SparkWebUIUrl(webUi) => originator ! WebUIForContext(name, Some(webUi))
@@ -201,6 +233,13 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         daoActor ! CleanContextJobInfos(name, DateTime.now())
       }
       cluster.down(actorRef.path.address)
+
+    case RegisterMonitor(monitorPath) =>
+      logger.info(s"Register JobServerMonitor in aco [$monitorPath]")
+      val actor = context.actorSelection(ActorPath.fromString(monitorPath))
+      acoMonitor = Some(actor)
+      actor ! RegisterMonitorAck(self.path.toString)
+
   }
 
   private def initContext(contextConfig: Config,
@@ -214,7 +253,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
     val resultActor = if (isAdHoc) globalResultActor else context.actorOf(Props(classOf[JobResultActor]))
     (ref ? JobManagerActor.Initialize(
-      contextConfig, Some(resultActor), dataManagerActor))(Timeout(timeoutSecs.second)).onComplete {
+      contextConfig, Some(resultActor), dataManagerActor)) (Timeout(timeoutSecs.second)).onComplete {
       case Failure(e: Exception) =>
         logger.info("Failed to send initialize message to context " + ref, e)
         cluster.down(ref.path.address)
@@ -240,7 +279,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   private def startContext(name: String, contextConfig: Config, isAdHoc: Boolean)
                           (successFunc: ActorRef => Unit)(failureFunc: Throwable => Unit): Unit = {
     require(!(contexts contains name), "There is already a context named " + name)
-    val contextActorName = "jobManager-" + java.util.UUID.randomUUID().toString.substring(16)
+    val contextActorName = s"jobManager-${java.util.UUID.randomUUID().toString.substring(16)}|$name"
 
     logger.info("Starting context with actor name {}", contextActorName)
 
@@ -260,7 +299,9 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       Map("is-adhoc" -> isAdHoc.toString, "context.name" -> name).asJava
     ).withFallback(contextConfig)
 
-    var managerArgs = Seq(master, deployMode, selfAddress.toString, contextActorName, contextDir.toString,
+    // aco cluster address
+    val clusterAddress = config.getString("aco.cluster.seed-node")
+    var managerArgs = Seq(master, deployMode, clusterAddress, contextActorName, contextDir.toString,
       config.getString("spark.jobserver.port"))
     // Add driver cores and memory argument
     if (contextConfig.hasPath("driver-cores")) {
@@ -281,7 +322,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       managerArgs = managerArgs :+ "DEFAULT_MESOS_DISPATCHER"
     }
 
-    if (isKubernetesMode){
+    if (isKubernetesMode) {
       managerArgs = managerArgs :+ encodedContextName.toLowerCase
     } else {
       managerArgs = managerArgs :+ "NULL"
@@ -314,5 +355,17 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       }
     }
 
+  }
+
+  private def parameters2Map(p: String): Map[String, String] = {
+    p.split("&").map {
+      kv =>
+        val kvArr = kv.split("=")
+        if (kvArr.length == 2) {
+          (kvArr(0), kvArr(1))
+        } else {
+          (kvArr(0), "")
+        }
+    }.toMap
   }
 }
