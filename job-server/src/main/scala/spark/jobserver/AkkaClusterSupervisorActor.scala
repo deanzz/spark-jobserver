@@ -3,7 +3,7 @@ package spark.jobserver
 import java.nio.file.{Files, Paths}
 import java.util.concurrent.TimeUnit
 
-import aco.spark.jobServer._
+import aco.jobserver.common.JobServerMessage._
 import akka.actor.SupervisorStrategy.Escalate
 import akka.actor._
 import akka.cluster.Cluster
@@ -127,7 +127,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     case ListContexts =>
       sender ! contexts.keys.toSeq
 
-    case AddContextToJobServer(name, operatorId, parameters, operation) =>
+    case AddContextWrapper(name, operatorId, parameters, operation) =>
       val requestWorker = sender()
       val paramMap = parameters2Map(parameters)
       val contextConfig = ConfigFactory.parseMap(paramMap.asJava)
@@ -142,7 +142,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       if (contexts contains name) {
         originator ! ContextAlreadyExists
         if (workerActor.isDefined) {
-          val succeed = AddContextToJobServerSucceed(name, contexts(name)._1.path.toString,
+          val succeed = AddContextSucceedWrapper(name, contexts(name)._1.path.toString,
             operatorId.get, s"context $name exists", operation.get)
           workerActor.get ! succeed
           acoMonitor.get ! succeed
@@ -151,7 +151,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         startContext(name, mergedConfig, false) { ref =>
           originator ! ContextInitialized
           if (workerActor.isDefined) {
-            val succeed = AddContextToJobServerSucceed(name, ref.path.toString,
+            val succeed = AddContextSucceedWrapper(name, ref.path.toString,
               operatorId.get, "SUCCESS", operation.get)
             workerActor.get ! succeed
             acoMonitor.get ! succeed
@@ -160,7 +160,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
           originator ! ContextInitError(err)
           if (workerActor.isDefined) {
             val errMsg = s"${err.getMessage}\n${err.getStackTrace.map(t => t.toString).mkString("\n")}"
-            workerActor.get ! AddContextToJobServerFailed(name, errMsg, operatorId.get, operation.get)
+            workerActor.get ! AddContextFailedWrapper(name, errMsg, operatorId.get, operation.get)
           }
         }
       }

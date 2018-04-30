@@ -90,8 +90,8 @@ object Dependencies {
     "spray repo" at "http://repo.spray.io"
   )
 
-  lazy val acoCommonVersion = "2.12.0-SNAPSHOT"
+  lazy val acoVersion = "2.6.0-SNAPSHOT"
   lazy val acoDeps = Seq(
-    "com.kongming.aco" % "aco-common_2.11" % acoCommonVersion
+    "com.kongming.aco" % "aco-jobserver-common_2.11" % acoVersion
   )
 }

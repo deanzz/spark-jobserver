@@ -5,15 +5,16 @@ import java.net.{URI, URL}
 import java.util.concurrent.Executors._
 import java.util.concurrent.atomic.AtomicInteger
 
+import aco.jobserver.common.JobServerMessage.StartJobWrapper
 import akka.actor.{ActorRef, PoisonPill, Props}
-import com.typesafe.config.Config
+import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.scheduler.SparkListener
 import org.apache.spark.scheduler.SparkListenerApplicationEnd
 import org.joda.time.DateTime
 import org.scalactic._
-import spark.jobserver.api.{JobEnvironment, DataFileCache}
+import spark.jobserver.api.{DataFileCache, JobEnvironment}
 import spark.jobserver.context.{JobContainer, SparkContextFactory}
 import spark.jobserver.io.{BinaryInfo, JobDAOActor, JobInfo, RemoteFileCache}
 import spark.jobserver.util.{ContextURLClassLoader, SparkJobUtils}
@@ -178,6 +179,10 @@ class JobManagerActor(daoActor: ActorRef)
           sender ! InitError(t)
           self ! PoisonPill
       }
+
+    case StartJobWrapper(appName, classPath, jobId, parameters) =>
+      val postedJobConfig = ConfigFactory.parseString(parameters)
+      val jobConfig = postedJobConfig.withFallback(config).resolve()
 
     case StartJob(appName, classPath, jobConfig, events) => {
       val loadedJars = jarLoader.getURLs

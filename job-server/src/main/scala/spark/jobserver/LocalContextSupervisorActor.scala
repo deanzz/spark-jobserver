@@ -26,7 +26,7 @@ object ContextSupervisor {
   case class AddContext(name: String, contextConfig: Config,
                         workerActor: Option[ActorRef] = None,
                         operatorId: Option[String] = None,
-                        operation: Option[ContextOperation] = None)
+                        operation: Option[String] = None)
   case class StartAdHocContext(classPath: String, contextConfig: Config)
   case class GetContext(name: String) // returns JobManager, JobResultActor
   case class GetResultActor(name: String)  // returns JobResultActor
