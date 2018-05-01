@@ -3,7 +3,7 @@ package spark.jobserver
 import java.nio.file.{Files, Paths}
 import java.util.concurrent.TimeUnit
 
-import aco.jobserver.common.JobServerMessage._
+import aco.jobserver.common.JobServerMessage.{SetJobServerRole, _}
 import akka.actor.SupervisorStrategy.Escalate
 import akka.actor._
 import akka.cluster.Cluster
@@ -77,6 +77,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   // and there is no way to retrieve results.
   private val globalResultActor = context.actorOf(Props[JobResultActor], "global-result-actor")
   private var acoMonitor: Option[ActorSelection] = None
+  private var jobServerRole: Option[String] = None
 
   logger.info("AkkaClusterSupervisor initialized on {}", selfAddress)
 
@@ -229,6 +230,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       val name: String = actorRef.path.name
       logger.info("Actor terminated: {}", name)
       for ((name, _) <- contexts.find(_._2._1 == actorRef)) {
+        acoMonitor.get ! JobTerminated(name, jobServerRole.getOrElse(""))
         contexts.remove(name)
         daoActor ! CleanContextJobInfos(name, DateTime.now())
       }
@@ -239,6 +241,10 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       val actor = context.actorSelection(ActorPath.fromString(monitorPath))
       acoMonitor = Some(actor)
       actor ! RegisterMonitorAck(self.path.toString)
+
+    case SetJobServerRole(role) =>
+      jobServerRole = Some(role)
+      sender() ! SetJobServerRoleAck
 
   }
 

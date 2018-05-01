@@ -1,6 +1,5 @@
 package spark.jobserver
 
-import aco.spark.context.ContextOperation
 import akka.actor.{ActorRef, PoisonPill, Props, Terminated}
 import akka.pattern.ask
 import akka.util.Timeout

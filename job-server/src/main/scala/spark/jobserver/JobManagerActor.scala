@@ -5,7 +5,7 @@ import java.net.{URI, URL}
 import java.util.concurrent.Executors._
 import java.util.concurrent.atomic.AtomicInteger
 
-import aco.jobserver.common.JobServerMessage.StartJobWrapper
+import aco.jobserver.common.JobServerMessage.{StartJobFailedWrapper, StartJobSucceedWrapper, StartJobWrapper}
 import akka.actor.{ActorRef, PoisonPill, Props}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.hadoop.conf.Configuration
@@ -14,9 +14,11 @@ import org.apache.spark.scheduler.SparkListener
 import org.apache.spark.scheduler.SparkListenerApplicationEnd
 import org.joda.time.DateTime
 import org.scalactic._
+import spark.jobserver.ContextSupervisor.ContextInitError
+import spark.jobserver.JobInfoActor.{JobConfigStored, StoreJobConfig}
 import spark.jobserver.api.{DataFileCache, JobEnvironment}
 import spark.jobserver.context.{JobContainer, SparkContextFactory}
-import spark.jobserver.io.{BinaryInfo, JobDAOActor, JobInfo, RemoteFileCache}
+import spark.jobserver.io._
 import spark.jobserver.util.{ContextURLClassLoader, SparkJobUtils}
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -24,32 +26,46 @@ import scala.util.{Failure, Success, Try}
 import spark.jobserver.common.akka.InstrumentedActor
 
 object JobManagerActor {
+
   // Messages
   case class Initialize(contextConfig: Config, resultActorOpt: Option[ActorRef],
                         dataFileActor: ActorRef)
+
   case class StartJob(appName: String, classPath: String, config: Config,
-                      subscribedEvents: Set[Class[_]])
+                      subscribedEvents: Set[Class[_]],
+                      jobId: Option[String] = None, workerActor: Option[ActorRef] = None)
+
   case class KillJob(jobId: String)
+
   case class JobKilledException(jobId: String) extends Exception(s"Job $jobId killed")
+
   case class ContextTerminatedException(contextName: String)
     extends Exception(s"Unexpected termination of context $contextName")
 
   case object GetContextConfig
+
   case object SparkContextStatus
+
   case object GetSparkWebUIUrl
 
   case class DeleteData(name: String)
 
   // Results/Data
   case class ContextConfig(contextName: String, contextConfig: SparkConf, hadoopConfig: Configuration)
-  case class Initialized(contextName: String, resultActor: ActorRef)
-  case class InitError(t: Throwable)
-  case class JobLoadingError(err: Throwable)
-  case class SparkWebUIUrl(url: String)
-  case object SparkContextAlive
-  case object SparkContextDead
-  case object NoSparkWebUI
 
+  case class Initialized(contextName: String, resultActor: ActorRef)
+
+  case class InitError(t: Throwable)
+
+  case class JobLoadingError(err: Throwable)
+
+  case class SparkWebUIUrl(url: String)
+
+  case object SparkContextAlive
+
+  case object SparkContextDead
+
+  case object NoSparkWebUI
 
 
   // Akka 2.2.x style actor props for actor creation
@@ -57,33 +73,33 @@ object JobManagerActor {
 }
 
 /**
- * The JobManager actor supervises jobs running in a single SparkContext, as well as shared metadata.
- * It creates a SparkContext (or a StreamingContext etc. depending on the factory class)
- * It also creates and supervises a JobResultActor and JobStatusActor, although an existing JobResultActor
- * can be passed in as well.
- *
- * == contextConfig ==
- * {{{
- *  num-cpu-cores = 4         # Total # of CPU cores to allocate across the cluster
- *  memory-per-node = 512m    # -Xmx style memory string for total memory to use for executor on one node
- *  dependent-jar-uris = ["local://opt/foo/my-foo-lib.jar"]
- *                            # URIs for dependent jars to load for entire context
- *  context-factory = "spark.jobserver.context.DefaultSparkContextFactory"
- *  spark.mesos.coarse = true  # per-context, rather than per-job, resource allocation
- *  rdd-ttl = 24 h            # time-to-live for RDDs in a SparkContext.  Don't specify = forever
- *  is-adhoc = false          # true if context is ad-hoc context
- *  context.name = "sql"      # Name of context
- * }}}
- *
- * == global configuration ==
- * {{{
- *   spark {
- *     jobserver {
- *       max-jobs-per-context = 16      # Number of jobs that can be run simultaneously per context
- *     }
- *   }
- * }}}
- */
+  * The JobManager actor supervises jobs running in a single SparkContext, as well as shared metadata.
+  * It creates a SparkContext (or a StreamingContext etc. depending on the factory class)
+  * It also creates and supervises a JobResultActor and JobStatusActor, although an existing JobResultActor
+  * can be passed in as well.
+  *
+  * == contextConfig ==
+  * {{{
+  *  num-cpu-cores = 4         # Total # of CPU cores to allocate across the cluster
+  *  memory-per-node = 512m    # -Xmx style memory string for total memory to use for executor on one node
+  *  dependent-jar-uris = ["local://opt/foo/my-foo-lib.jar"]
+  *                            # URIs for dependent jars to load for entire context
+  *  context-factory = "spark.jobserver.context.DefaultSparkContextFactory"
+  *  spark.mesos.coarse = true  # per-context, rather than per-job, resource allocation
+  *  rdd-ttl = 24 h            # time-to-live for RDDs in a SparkContext.  Don't specify = forever
+  *  is-adhoc = false          # true if context is ad-hoc context
+  *  context.name = "sql"      # Name of context
+  * }}}
+  *
+  * == global configuration ==
+  * {{{
+  *   spark {
+  *     jobserver {
+  *       max-jobs-per-context = 16      # Number of jobs that can be run simultaneously per context
+  *     }
+  *   }
+  * }}}
+  */
 class JobManagerActor(daoActor: ActorRef)
   extends InstrumentedActor {
 
@@ -123,13 +139,23 @@ class JobManagerActor(daoActor: ActorRef)
   private var jobCache: JobCache = _
 
   private val jobServerNamedObjects = new JobServerNamedObjects(context.system)
+  private val errorEvents: Set[Class[_]] = Set(classOf[JobErroredOut], classOf[JobValidationFailed])
+  private val asyncEvents = Set(classOf[JobStarted]) ++ errorEvents
+  private val startJobSucceedTpl =
+    """
+      |{"status":"%s","classPath":"%s","startTime":"%s",
+      |"context":"%s","jobId":"%s","result":"%s","duration":"%s"}
+    """.stripMargin
 
   private def getEnvironment(_jobId: String): JobEnvironment = {
     val _contextCfg = contextConfig
     new JobEnvironment with DataFileCache {
       def jobId: String = _jobId
+
       def namedObjects: NamedObjects = jobServerNamedObjects
+
       def contextConfig: Config = _contextCfg
+
       def getDataFile(dataFile: String): File = {
         remoteFileCache.getDataFile(dataFile)
       }
@@ -181,20 +207,23 @@ class JobManagerActor(daoActor: ActorRef)
       }
 
     case StartJobWrapper(appName, classPath, jobId, parameters) =>
+      val requestWorker = sender()
       val postedJobConfig = ConfigFactory.parseString(parameters)
       val jobConfig = postedJobConfig.withFallback(config).resolve()
 
-    case StartJob(appName, classPath, jobConfig, events) => {
+      self ! StartJob(appName, classPath, jobConfig, asyncEvents, Some(jobId), Some(requestWorker))
+
+    case StartJob(appName, classPath, jobConfig, events, jobId, workerActor) => {
       val loadedJars = jarLoader.getURLs
       getSideJars(jobConfig).foreach { jarUri =>
         val jarToLoad = new URL(convertJarUriSparkToJava(jarUri))
-        if(! loadedJars.contains(jarToLoad)){
+        if (!loadedJars.contains(jarToLoad)) {
           logger.info("Adding {} to Current Job Class path", jarUri)
           jarLoader.addURL(new URL(convertJarUriSparkToJava(jarUri)))
           jobContext.sparkContext.addJar(jarUri)
         }
       }
-      startJobInternal(appName, classPath, jobConfig, events, jobContext, sparkEnv)
+      startJobInternal(appName, classPath, jobConfig, events, jobContext, sparkEnv, jobId, workerActor)
     }
 
     case KillJob(jobId: String) => {
@@ -268,7 +297,9 @@ class JobManagerActor(daoActor: ActorRef)
                        jobConfig: Config,
                        events: Set[Class[_]],
                        jobContext: ContextLike,
-                       sparkEnv: SparkEnv): Option[Future[Any]] = {
+                       sparkEnv: SparkEnv,
+                       jobIdOpt: Option[String],
+                       workerActor: Option[ActorRef]): Option[Future[Any]] = {
     import akka.pattern.ask
     import akka.util.Timeout
     import spark.jobserver.context._
@@ -285,21 +316,39 @@ class JobManagerActor(daoActor: ActorRef)
     val daoAskTimeout = Timeout(3 seconds)
     // TODO: refactor so we don't need Await, instead flatmap into more futures
     val resp = Await.result(
-      (daoActor ? JobDAOActor.GetLastUploadTimeAndType(appName))(daoAskTimeout).
+      (daoActor ? JobDAOActor.GetLastUploadTimeAndType(appName)) (daoAskTimeout).
         mapTo[JobDAOActor.LastUploadTimeAndType],
       daoAskTimeout.duration)
 
+    val jobId = jobIdOpt.getOrElse(java.util.UUID.randomUUID().toString)
+
     val lastUploadTimeAndType = resp.uploadTimeAndType
-    if (!lastUploadTimeAndType.isDefined) return failed(NoSuchApplication)
+    if (lastUploadTimeAndType.isEmpty) {
+      if (workerActor.isDefined) {
+        nofifyStartJobFailedToAco(workerActor.get, jobId, NoSuchApplication, Some(appName))
+      }
+      return failed(NoSuchApplication)
+    }
     val (lastUploadTime, binaryType) = lastUploadTimeAndType.get
 
-    val jobId = java.util.UUID.randomUUID().toString()
     val jobContainer = factory.loadAndValidateJob(appName, lastUploadTime,
-                                                  classPath, jobCache) match {
+      classPath, jobCache) match {
       case Good(container) => container
-      case Bad(JobClassNotFound) => return failed(NoSuchClass)
-      case Bad(JobWrongType) => return failed(WrongJobType)
-      case Bad(JobLoadError(ex)) => return failed(JobLoadingError(ex))
+      case Bad(JobClassNotFound) =>
+        if (workerActor.isDefined) {
+          nofifyStartJobFailedToAco(workerActor.get, jobId, NoSuchClass, Some(classPath))
+        }
+        return failed(NoSuchClass)
+      case Bad(JobWrongType) =>
+        if (workerActor.isDefined) {
+          nofifyStartJobFailedToAco(workerActor.get, jobId, WrongJobType)
+        }
+        return failed(WrongJobType)
+      case Bad(JobLoadError(ex)) =>
+        if (workerActor.isDefined) {
+          nofifyStartJobFailedToAco(workerActor.get, jobId, JobLoadError(ex))
+        }
+        return failed(JobLoadingError(ex))
     }
 
     // Automatically subscribe the sender to events so it starts getting them right away
@@ -309,7 +358,7 @@ class JobManagerActor(daoActor: ActorRef)
     val binInfo = BinaryInfo(appName, binaryType, lastUploadTime)
     val jobInfo = JobInfo(jobId, contextName, binInfo, classPath, DateTime.now(), None, None)
 
-    Some(getJobFuture(jobContainer, jobInfo, jobConfig, sender, jobContext, sparkEnv))
+    Some(getJobFuture(jobContainer, jobInfo, jobConfig, sender, jobContext, sparkEnv, workerActor.get))
   }
 
   private def getJobFuture(container: JobContainer,
@@ -317,7 +366,8 @@ class JobManagerActor(daoActor: ActorRef)
                            jobConfig: Config,
                            subscriber: ActorRef,
                            jobContext: ContextLike,
-                           sparkEnv: SparkEnv): Future[Any] = {
+                           sparkEnv: SparkEnv,
+                           workerActor: ActorRef): Future[Any] = {
 
     val jobId = jobInfo.jobId
     logger.info("Starting Spark job {} [{}]...", jobId: Any, jobInfo.classPath)
@@ -327,7 +377,9 @@ class JobManagerActor(daoActor: ActorRef)
     // nothing in it.
     if (currentRunningJobs.getAndIncrement() >= maxRunningJobs) {
       currentRunningJobs.decrementAndGet()
-      sender ! NoJobSlotsAvailable(maxRunningJobs)
+      val msg = NoJobSlotsAvailable(maxRunningJobs)
+      sender ! msg
+      nofifyStartJobFailedToAco(workerActor, jobId, msg, Some(contextName))
       return Future[Any](None)(context.dispatcher)
     }
 
@@ -349,12 +401,20 @@ class JobManagerActor(daoActor: ActorRef)
           job.validate(jobC, jobEnv, jobConfig) match {
             case Bad(reasons) =>
               val err = new Throwable(reasons.toString)
-              statusActor ! JobValidationFailed(jobId, DateTime.now(), err)
+              val msg = JobValidationFailed(jobId, DateTime.now(), err)
+              statusActor ! msg
+              nofifyStartJobFailedToAco(workerActor, jobId, msg)
               throw err
             case Good(jobData) =>
-              statusActor ! JobStarted(jobId: String, jobInfo)
               val sc = jobContext.sparkContext
               sc.setJobGroup(jobId, s"Job group for $jobId and spark context ${sc.applicationId}", true)
+              statusActor ! JobStarted(jobId, jobInfo)
+
+              val resp = startJobSucceedTpl.format(
+                JobStatus.Started, jobInfo.classPath, jobInfo.startTime, jobInfo.contextName,
+                jobId, "", getJobDurationString(jobInfo.jobLengthMillis))
+              workerActor ! StartJobSucceedWrapper(jobId, resp)
+
               job.runJob(jobC, jobEnv, jobData)
           }
         } finally {
@@ -388,7 +448,9 @@ class JobManagerActor(daoActor: ActorRef)
         // Wrapping the error inside a RuntimeException to handle the case of throwing custom exceptions.
         val wrappedError = wrapInRuntimeException(error)
         // If and only if job validation fails, JobErroredOut message is dropped silently in JobStatusActor.
-        statusActor ! JobErroredOut(jobId, DateTime.now(), wrappedError)
+        val msg = JobErroredOut(jobId, DateTime.now(), wrappedError)
+        statusActor ! msg
+        nofifyStartJobFailedToAco(workerActor, jobId, msg)
         logger.error("Exception from job " + jobId + ": ", error)
     }(executionContext).andThen {
       case _ =>
@@ -405,8 +467,8 @@ class JobManagerActor(daoActor: ActorRef)
   // a custom exception is thrown. Currently, throwing a custom exception doesn't
   // work and this is a workaround to wrap it into a standard exception.
   protected def wrapInRuntimeException(t: Throwable): RuntimeException = {
-    val cause : Throwable = getRootCause(t)
-    val e : RuntimeException = new RuntimeException("%s: %s"
+    val cause: Throwable = getRootCause(t)
+    val e: RuntimeException = new RuntimeException("%s: %s"
       .format(cause.getClass().getName(), cause.getMessage))
     e.setStackTrace(cause.getStackTrace())
     return e
@@ -414,9 +476,9 @@ class JobManagerActor(daoActor: ActorRef)
 
   // Gets the very first exception that caused the current exception to be thrown.
   protected def getRootCause(t: Throwable): Throwable = {
-    var result : Throwable = t
-    var cause : Throwable = result.getCause()
-    while(cause != null  && (result != cause) ) {
+    var result: Throwable = t
+    var cause: Throwable = result.getCause()
+    while (cause != null && (result != cause)) {
       result = cause
       cause = result.getCause()
     }
@@ -459,5 +521,54 @@ class JobManagerActor(daoActor: ActorRef)
   // present on every node, whereas file:// will be assumed only present on driver node
   private def getSideJars(config: Config): Seq[String] =
     Try(config.getStringList("dependent-jar-uris").asScala.toSeq).
-     orElse(Try(config.getString("dependent-jar-uris").split(",").toSeq)).getOrElse(Nil)
+      orElse(Try(config.getString("dependent-jar-uris").split(",").toSeq)).getOrElse(Nil)
+
+  private def getJobDurationString(duration: Option[Long]): String =
+    duration.map { ms => ms / 1000.0 + " secs" }.getOrElse("Job not done yet")
+
+  def formatException(t: Throwable): Any = {
+    s"""{"message":"${t.getMessage}","errorClass":"${t.getClass.getName}",
+       |"stack":"${ErrorData.getStackTrace(t)}"}""".stripMargin
+  }
+
+  def errResp(errMsg: String): String = {
+    s"""{"status":"${JobStatus.Error}","result":"$errMsg""""
+  }
+
+  def errResp(t: Throwable, status: String): String = {
+    s"""{"status":"$status","result":${formatException(t)})"""
+  }
+
+  def errResp(errMsg: String, status: String): String = {
+    s"""{"status":"$status","result":$errMsg)"""
+  }
+
+  def errResp(jobId: String, t: Throwable, status: String): String = {
+    s"""{"jobId":"$jobId","status":"$status","result":${formatException(t)})"""
+  }
+
+  def nofifyStartJobFailedToAco(workerActor: ActorRef, jobId: String,
+                                errMsg: Any, errMsgArg: Option[String] = None): Unit = {
+    val resp = errMsg match {
+      case NoJobSlotsAvailable(maxJobSlots) =>
+        val errorMsg = "Too many running jobs (" + maxJobSlots.toString +
+          ") for job context '" + errMsgArg.getOrElse("") + "'"
+        errResp(errorMsg, "NO SLOTS AVAILABLE")
+      case JobValidationFailed(_, _, ex) => errResp(ex, "VALIDATION FAILED")
+      case JobErroredOut(jobId, _, ex) => errResp(jobId, ex, JobStatus.Error)
+      case NoSuchApplication =>
+        val msg = "appName " + errMsgArg.getOrElse("") + " not found"
+        errResp(msg)
+      case NoSuchClass =>
+        val msg = "classPath " + errMsgArg.getOrElse("") + " not found"
+        errResp(msg)
+      case WrongJobType => errResp("Invalid job type for this context")
+      case JobLoadingError(ex) => errResp(ex, "JOB LOADING FAILED")
+      //case ContextInitError(ex) => errResp(ex, "CONTEXT INIT FAILED")
+      case e: Exception => errResp(e, "ERROR")
+      case other => errResp(other.toString)
+    }
+    workerActor ! StartJobFailedWrapper(jobId, resp)
+  }
+
 }
