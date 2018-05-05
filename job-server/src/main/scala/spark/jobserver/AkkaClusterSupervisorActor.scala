@@ -18,11 +18,12 @@ import scala.util.{Failure, Success, Try}
 import scala.sys.process._
 import spark.jobserver.common.akka.InstrumentedActor
 
-import scala.concurrent.Await
+import scala.concurrent.{Await, TimeoutException}
 import akka.pattern.gracefulStop
 import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
 import spark.jobserver.JobManagerActor.{GetSparkWebUIUrl, NoSparkWebUI, SparkContextDead, SparkWebUIUrl}
+import spark.jobserver.clients.kubernetes.K8sHttpClient
 import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
 
 /**
@@ -50,6 +51,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   import scala.collection.JavaConverters._
   import scala.concurrent.duration._
 
+  implicit val system = context.system
   private val config = context.system.settings.config
   private val defaultContextConfig = config.getConfig("spark.context-settings")
   private val contextInitTimeout = config.getDuration("spark.context-settings.context-init-timeout",
@@ -57,6 +59,8 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   private val contextTimeout = SparkJobUtils.getContextCreationTimeout(config)
   private val contextDeletionTimeout = SparkJobUtils.getContextDeletionTimeout(config)
   private val managerStartCommand = config.getString("deploy.manager-start-cmd")
+  private val enableK8sCheck = Try(config.getBoolean("kubernetes.check.enable")).getOrElse(false)
+  private val k8sClient = new K8sHttpClient(config)
 
   import context.dispatcher
 
@@ -130,9 +134,54 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
     case AddContextWrapper(name, operatorId, parameters, operation) =>
       val requestWorker = sender()
-      val paramMap = parameters2Map(parameters)
-      val contextConfig = ConfigFactory.parseMap(paramMap.asJava)
-      self ! AddContext(name, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
+
+      def create(): Unit = {
+        val paramMap = parameters2Map(parameters)
+        val contextConfig = ConfigFactory.parseMap(paramMap.asJava)
+        self ! AddContext(name, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
+      }
+
+      if (enableK8sCheck) {
+        Try(k8sClient.podStatus(name)) match {
+          case Success(res) =>
+            res match {
+              case "NotFound" =>
+                create()
+              case other =>
+                logger.info(s"The status of context [$name] in kubernetes is $other")
+                contexts.get(name) match {
+                  case Some(ctx) =>
+                    val succeed = AddContextSucceedWrapper(name, ctx._1.path.toString,
+                      operatorId, s"context $name exists", operation)
+                    requestWorker ! succeed
+                    acoMonitor.get ! succeed
+                  case _ =>
+                    val failed = AddContextFailedWrapper(name,
+                      "Kubernetes error,Inconsistent jobserver and kubernetes status", operatorId, operation)
+                    requestWorker ! failed
+                    acoMonitor.get ! failed
+                }
+            }
+          case Failure(e) =>
+            logger.error(s"AddContextWrapper error, ${e.getMessage}", e)
+            e match {
+              case _: TimeoutException =>
+                val failed = AddContextFailedWrapper(name,
+                  s"Kubernetes error, Connect kubernetes API timeout!!",
+                  operatorId, operation)
+                requestWorker ! failed
+                acoMonitor.get ! failed
+              case _ =>
+                val err = s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
+                val failed = AddContextFailedWrapper(name, s"Kubernetes error, $err", operatorId, operation)
+                requestWorker ! failed
+                acoMonitor.get ! failed
+            }
+        }
+      } else {
+        create()
+      }
+
 
     case AddContext(name, contextConfig, workerActor, operatorId, operation) =>
       val originator = sender()
@@ -142,7 +191,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       // https://github.com/spark-jobserver/spark-jobserver/issues/349
       if (contexts contains name) {
         originator ! ContextAlreadyExists
-        if (workerActor.isDefined) {
+        if (!enableK8sCheck && workerActor.isDefined) {
           val succeed = AddContextSucceedWrapper(name, contexts(name)._1.path.toString,
             operatorId.get, s"context $name exists", operation.get)
           workerActor.get ! succeed
@@ -230,9 +279,23 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       val name: String = actorRef.path.name
       logger.info("Actor terminated: {}", name)
       for ((name, _) <- contexts.find(_._2._1 == actorRef)) {
-        acoMonitor.get ! JobTerminated(name, jobServerRole.getOrElse(""))
         contexts.remove(name)
         daoActor ! CleanContextJobInfos(name, DateTime.now())
+        if(enableK8sCheck){
+          Try(k8sClient.podLog(name)) match {
+            case Success(log) =>
+              acoMonitor.get ! JobTerminated(name, jobServerRole.getOrElse(""), log)
+            case Failure(e) =>
+              val errMsg = e match {
+                case _: TimeoutException => "Connect kubernetes API timeout!!"
+                case _ => s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
+              }
+              acoMonitor.get ! JobTerminated(name, jobServerRole.getOrElse(""), errMsg)
+          }
+        } else {
+          acoMonitor.get ! JobTerminated(name, jobServerRole.getOrElse(""),
+            "No error log when kubernetes.check.enable is false")
+        }
       }
       cluster.down(actorRef.path.address)
 

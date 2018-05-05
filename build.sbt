@@ -12,6 +12,13 @@ lazy val akkaApp = Project(id = "akka-app", base = file("akka-app"))
   .settings(publishSettings)
   .disablePlugins(SbtScalariform)
 
+//kubernetes-client
+lazy val kubernetesClient = Project(id = "kubernetes-client", base = file("kubernetes-client"))
+  .settings(commonSettings)
+  .settings(libraryDependencies ++= coreTestDeps ++ akkaDeps)
+  .settings(publishSettings)
+  .disablePlugins(SbtScalariform)
+
 lazy val jobServer = Project(id = "job-server", base = file("job-server"))
   .settings(commonSettings)
   .settings(revolverSettings)
@@ -35,7 +42,7 @@ lazy val jobServer = Project(id = "job-server", base = file("job-server"))
     fork in Test := true
   )
   .settings(publishSettings)
-  .dependsOn(akkaApp, jobServerApi)
+  .dependsOn(akkaApp, jobServerApi, kubernetesClient)
   .disablePlugins(SbtScalariform)
 
 lazy val jobServerTestJar = Project(id = "job-server-tests", base = file("job-server-tests"))
@@ -139,8 +146,12 @@ lazy val dockerSettings = Seq(
     val sparkBuildCmd = scalaBinaryVersion.value match {
       case "2.11" =>
         Versions.spark match {
-          case s if s.startsWith("1") => {"./make-distribution.sh -Dscala-2.11 -Phadoop-2.7 -Phive"}
-          case _ => {"./dev/make-distribution.sh -Dscala-2.11 -Phadoop-2.7 -Phive"}
+          case s if s.startsWith("1") => {
+            "./make-distribution.sh -Dscala-2.11 -Phadoop-2.7 -Phive"
+          }
+          case _ => {
+            "./dev/make-distribution.sh -Dscala-2.11 -Phadoop-2.7 -Phive"
+          }
         }
       case other => throw new RuntimeException(s"Scala version $other is not supported!")
     }
@@ -158,14 +169,14 @@ lazy val dockerSettings = Seq(
                 apt-get -y install mesos=${MESOS_VERSION} && \
                 apt-get clean
         """)
-      env("MAVEN_VERSION","3.3.9")
+      env("MAVEN_VERSION", "3.3.9")
       runRaw(
         """mkdir -p /usr/share/maven /usr/share/maven/ref \
           && curl -fsSL http://apache.osuosl.org/maven/maven-3/$MAVEN_VERSION/binaries/apache-maven-$MAVEN_VERSION-bin.tar.gz \
           | tar -xzC /usr/share/maven --strip-components=1 \
           && ln -s /usr/share/maven/bin/mvn /usr/bin/mvn
         """)
-      env("MAVEN_HOME","/usr/share/maven")
+      env("MAVEN_HOME", "/usr/share/maven")
       env("MAVEN_CONFIG", "/.m2")
 
       copy(artifact, artifactTargetPath)
@@ -243,7 +254,7 @@ lazy val runScalaStyle = taskKey[Unit]("testScalaStyle")
 
 lazy val commonSettings = Defaults.coreDefaultSettings ++ dirSettings ++ implicitlySettings ++ Seq(
   organization := "spark.jobserver",
-  crossPaths   := true,
+  crossPaths := true,
   scalaVersion := sys.env.getOrElse("SCALA_VERSION", "2.11.8"),
   dependencyOverrides += "org.scala-lang" % "scala-compiler" % scalaVersion.value,
   // scalastyleFailOnError := true,
