@@ -162,6 +162,8 @@ class JobManagerActor(daoActor: ActorRef)
     }
   }
 
+  override def preRestart(reason: Throwable, message: Option[Any]): Unit = super.preRestart(reason, message)
+
   override def postStop() {
     logger.info("Shutting down SparkContext {}", contextName)
     Option(jobContext).foreach(_.stop())

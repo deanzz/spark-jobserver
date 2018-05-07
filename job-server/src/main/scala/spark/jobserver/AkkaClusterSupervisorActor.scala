@@ -3,7 +3,7 @@ package spark.jobserver
 import java.nio.file.{Files, Paths}
 import java.util.concurrent.TimeUnit
 
-import aco.jobserver.common.JobServerMessage.{SetJobServerRole, _}
+import aco.jobserver.common.JobServerMessage._
 import akka.actor.SupervisorStrategy.Escalate
 import akka.actor._
 import akka.cluster.Cluster
@@ -284,16 +284,16 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         if(enableK8sCheck){
           Try(k8sClient.podLog(name)) match {
             case Success(log) =>
-              acoMonitor.get ! JobTerminated(name, jobServerRole.getOrElse(""), log)
+              acoMonitor.get ! ContextTerminated(name, jobServerRole.getOrElse(""), log)
             case Failure(e) =>
               val errMsg = e match {
                 case _: TimeoutException => "Connect kubernetes API timeout!!"
                 case _ => s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
               }
-              acoMonitor.get ! JobTerminated(name, jobServerRole.getOrElse(""), errMsg)
+              acoMonitor.get ! ContextTerminated(name, jobServerRole.getOrElse(""), errMsg)
           }
         } else {
-          acoMonitor.get ! JobTerminated(name, jobServerRole.getOrElse(""),
+          acoMonitor.get ! ContextTerminated(name, jobServerRole.getOrElse(""),
             "No error log when kubernetes.check.enable is false")
         }
       }
