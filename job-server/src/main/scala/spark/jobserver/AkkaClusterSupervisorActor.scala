@@ -8,6 +8,7 @@ import akka.actor.SupervisorStrategy.Escalate
 import akka.actor._
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp}
+import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonProxy, ClusterSingletonProxySettings}
 import akka.util.Timeout
 import akka.pattern.ask
 import com.typesafe.config.{Config, ConfigFactory}
@@ -44,7 +45,7 @@ import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
   *   }
   * }}}
   */
-class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
+class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef, acoClusterSeedNode: ActorRef)
   extends InstrumentedActor {
 
   import ContextSupervisor._
@@ -75,26 +76,30 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   private val contexts = mutable.HashMap.empty[String, (ActorRef, ActorRef)]
 
   private val cluster = Cluster(context.system)
-  private val selfAddress = cluster.selfAddress
+  //private val selfAddress = cluster.selfAddress
 
   // This is for capturing results for ad-hoc jobs. Otherwise when ad-hoc job dies, resultActor also dies,
   // and there is no way to retrieve results.
   private val globalResultActor = context.actorOf(Props[JobResultActor], "global-result-actor")
-  private var acoMonitor: Option[ActorSelection] = None
-  private var jobServerRole: Option[String] = None
+  private val acoMonitor: Option[ActorRef] = Some(context.system.actorOf(ClusterSingletonProxy.props(
+    singletonManagerPath = "/user/jobserver-monitor",
+    settings = ClusterSingletonProxySettings(context.system).withRole("scheduler")),
+    name = "jobserver-monitor-proxy"))
 
-  logger.info("AkkaClusterSupervisor initialized on {}", selfAddress)
+  private var jobServerRole: Option[String] = None
+  // private val
+  logger.info("AkkaClusterSupervisor initialized on {}", acoClusterSeedNode)
 
 
   override def preStart(): Unit = {
     //cluster.join(selfAddress)
-    cluster.subscribe(self, initialStateMode = InitialStateAsEvents, classOf[MemberEvent])
+    cluster.subscribe(acoClusterSeedNode, initialStateMode = InitialStateAsEvents, classOf[MemberEvent])
     logger.info("AkkaClusterSupervisorActor preStart")
   }
 
   override def postStop(): Unit = {
-    cluster.unsubscribe(self)
-    cluster.leave(selfAddress)
+    cluster.unsubscribe(acoClusterSeedNode)
+    cluster.leave(acoClusterSeedNode.path.address)
     logger.info("AkkaClusterSupervisorActor postStop")
   }
 
@@ -133,6 +138,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       sender ! contexts.keys.toSeq
 
     case AddContextWrapper(name, operatorId, parameters, operation) =>
+      logger.info(s"Start AddContextWrapper ($name)")
       val requestWorker = sender()
 
       def create(): Unit = {
@@ -301,9 +307,10 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
     case RegisterMonitor(monitorPath) =>
       logger.info(s"Register JobServerMonitor in aco [$monitorPath]")
-      val actor = context.actorSelection(ActorPath.fromString(monitorPath))
-      acoMonitor = Some(actor)
-      actor ! RegisterMonitorAck(self.path.toString)
+      acoMonitor.get ! RegisterMonitorAck(self.path.toString)
+      //val actor = context.actorSelection(ActorPath.fromString(monitorPath))
+      //acoMonitor = Some(actor)
+      //actor ! RegisterMonitorAck(self.path.toString)
 
     case SetJobServerRole(role) =>
       jobServerRole = Some(role)

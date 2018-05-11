@@ -6,13 +6,14 @@ import com.typesafe.config.{Config, ConfigFactory, ConfigValueFactory}
 import java.io.File
 
 import akka.cluster.Cluster
+import akka.util.Timeout
 import spark.jobserver.io.{BinaryType, DataFileDAO, JobDAO, JobDAOActor}
 import org.slf4j.LoggerFactory
+import spark.jobserver.AcoSeedIdentifyActor.GetAcoSeedActorRef
 
 import scala.collection.JavaConverters._
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.Await
 import scala.concurrent.duration._
-import scala.util.Try
 
 /**
  * The Spark Job Server is a web service that allows users to submit and run Spark jobs, check status,
@@ -98,9 +99,24 @@ object JobServer {
       logger.info("Embeded H2 server started with base dir {} and URL {}", rootDir, h2.getURL: Any)
     }
 
-    // join aco cluster
     val clusterAddress = config.getString("aco.cluster.seed-node")
-    Cluster(system).join(AddressFromURIString.parse(clusterAddress))
+    logger.info(s"clusterAddress of aco is $clusterAddress")
+
+    val acoSeedIdentifyActor = system.actorOf(Props(classOf[AcoSeedIdentifyActor], clusterAddress))
+    implicit val timeout = Timeout(15.second)
+    var acoSeedActorRefOpt: Option[ActorRef] = None
+    var times = 30
+    while (acoSeedActorRefOpt.isEmpty && times > 0) {
+      acoSeedActorRefOpt =
+        Await.result(acoSeedIdentifyActor ? GetAcoSeedActorRef, 15 second).asInstanceOf[Option[ActorRef]]
+      Thread.sleep(1000)
+      times = times - 1
+    }
+
+    if(acoSeedActorRefOpt.isEmpty){
+      logger.error(s"Cannot get ActorRef of acoSeedNode from address [$clusterAddress]")
+      sys.exit(1)
+    }
 
     val ctor = jobDaoClass.getDeclaredConstructor(Class.forName("com.typesafe.config.Config"))
     val jobDAO = ctor.newInstance(config).asInstanceOf[JobDAO]
@@ -115,8 +131,11 @@ object JobServer {
         } else {
           classOf[LocalContextSupervisorActor]
         },
-        daoActor, dataManager), "context-supervisor")
+        daoActor, dataManager, acoSeedActorRefOpt.get), "context-supervisor")
     val jobInfo = system.actorOf(Props(classOf[JobInfoActor], jobDAO, supervisor), "job-info")
+
+    // join aco cluster
+    Cluster(system).join(AddressFromURIString.parse(clusterAddress))
 
     // Add initial job JARs, if specified in configuration.
     storeInitialBinaries(config, binManager)
@@ -191,7 +210,7 @@ object JobServer {
     }
 
     try {
-      start(args, makeSupervisorSystem("JobServer")(_))
+      start(args, makeSupervisorSystem("AntCluster")(_))
     } catch {
       case e: Exception =>
         logger.error("Unable to start Spark JobServer: ", e)

@@ -75,7 +75,8 @@ object ContextSupervisor {
  *   }
  * }}}
  */
-class LocalContextSupervisorActor(dao: ActorRef, dataManagerActor: ActorRef) extends InstrumentedActor {
+class LocalContextSupervisorActor(dao: ActorRef, dataManagerActor: ActorRef,
+                                  acoClusterSeedNode: ActorRef) extends InstrumentedActor {
   import ContextSupervisor._
   import scala.collection.JavaConverters._
   import scala.concurrent.duration._
