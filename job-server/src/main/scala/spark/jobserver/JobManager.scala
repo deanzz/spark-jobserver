@@ -66,7 +66,7 @@ object JobManager {
 
     val jobManager = system.actorOf(JobManagerActor.props(daoActor), managerName)
 
-    //Join akka cluster
+    //Join aco cluster
     logger.info("Joining cluster at address {}", clusterAddress)
     Cluster(system).join(clusterAddress)
 
@@ -101,7 +101,7 @@ object JobManager {
       }
     }
 
-    start(args, makeManagerSystem("JobServer"), waitForTermination)
+    start(args, makeManagerSystem("AntCluster"), waitForTermination)
   }
 }
 

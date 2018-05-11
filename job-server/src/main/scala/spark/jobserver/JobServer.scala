@@ -102,7 +102,7 @@ object JobServer {
     val clusterAddress = config.getString("aco.cluster.seed-node")
     logger.info(s"clusterAddress of aco is $clusterAddress")
 
-    val acoSeedIdentifyActor = system.actorOf(Props(classOf[AcoSeedIdentifyActor], clusterAddress))
+   /* val acoSeedIdentifyActor = system.actorOf(Props(classOf[AcoSeedIdentifyActor], clusterAddress))
     implicit val timeout = Timeout(15.second)
     var acoSeedActorRefOpt: Option[ActorRef] = None
     var times = 30
@@ -116,7 +116,7 @@ object JobServer {
     if(acoSeedActorRefOpt.isEmpty){
       logger.error(s"Cannot get ActorRef of acoSeedNode from address [$clusterAddress]")
       sys.exit(1)
-    }
+    }*/
 
     val ctor = jobDaoClass.getDeclaredConstructor(Class.forName("com.typesafe.config.Config"))
     val jobDAO = ctor.newInstance(config).asInstanceOf[JobDAO]
@@ -131,14 +131,14 @@ object JobServer {
         } else {
           classOf[LocalContextSupervisorActor]
         },
-        daoActor, dataManager, acoSeedActorRefOpt.get), "context-supervisor")
+        daoActor, dataManager/*, acoSeedActorRefOpt.get*/), "context-supervisor")
     val jobInfo = system.actorOf(Props(classOf[JobInfoActor], jobDAO, supervisor), "job-info")
-
-    // join aco cluster
-    Cluster(system).join(AddressFromURIString.parse(clusterAddress))
 
     // Add initial job JARs, if specified in configuration.
     storeInitialBinaries(config, binManager)
+
+    // join aco cluster
+    Cluster(system).join(AddressFromURIString.parse(clusterAddress))
 
     // Create initial contexts
     supervisor ! ContextSupervisor.AddContextsFromConfig

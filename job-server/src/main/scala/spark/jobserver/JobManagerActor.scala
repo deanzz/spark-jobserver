@@ -6,7 +6,8 @@ import java.util.concurrent.Executors._
 import java.util.concurrent.atomic.AtomicInteger
 
 import aco.jobserver.common.JobServerMessage.{StartJobFailedWrapper, StartJobSucceedWrapper, StartJobWrapper}
-import akka.actor.{ActorRef, PoisonPill, Props}
+import akka.actor.SupervisorStrategy.Escalate
+import akka.actor.{ActorRef, OneForOneStrategy, PoisonPill, Props}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.{SparkConf, SparkEnv}
@@ -105,7 +106,7 @@ class JobManagerActor(daoActor: ActorRef)
 
   import CommonMessages._
   import JobManagerActor._
-
+  import scala.concurrent.duration._
   import collection.JavaConverters._
 
   val config = context.system.settings.config
@@ -169,6 +170,14 @@ class JobManagerActor(daoActor: ActorRef)
     Option(jobContext).foreach(_.stop())
   }
 
+  override val supervisorStrategy: OneForOneStrategy =
+    OneForOneStrategy(maxNrOfRetries = 10, withinTimeRange = 1 minute) {
+      case e: Exception =>
+        logger.error(s"JobManagerActor OneForOneStrategy got error, " +
+          s"${e.getMessage}", e)
+        Escalate
+    }
+
   // Handle external kill events (e.g. killed via YARN)
   private def sparkListener = {
     new SparkListener() {
@@ -188,7 +197,8 @@ class JobManagerActor(daoActor: ActorRef)
       statusActor = context.actorOf(JobStatusActor.props(daoActor))
       resultActor = resOpt.getOrElse(context.actorOf(Props[JobResultActor]))
       remoteFileCache = new RemoteFileCache(self, dataManagerActor)
-
+      /*val n = 2 / 0
+      logger.info(s"n = $n")*/
       try {
         // Load side jars first in case the ContextFactory comes from it
         getSideJars(contextConfig).foreach { jarUri =>

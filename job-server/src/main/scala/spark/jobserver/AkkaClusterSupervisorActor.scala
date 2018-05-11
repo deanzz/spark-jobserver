@@ -8,7 +8,7 @@ import akka.actor.SupervisorStrategy.Escalate
 import akka.actor._
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp}
-import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonProxy, ClusterSingletonProxySettings}
+import akka.cluster.singleton.{ClusterSingletonProxy, ClusterSingletonProxySettings}
 import akka.util.Timeout
 import akka.pattern.ask
 import com.typesafe.config.{Config, ConfigFactory}
@@ -45,7 +45,7 @@ import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
   *   }
   * }}}
   */
-class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef, acoClusterSeedNode: ActorRef)
+class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   extends InstrumentedActor {
 
   import ContextSupervisor._
@@ -76,7 +76,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef,
   private val contexts = mutable.HashMap.empty[String, (ActorRef, ActorRef)]
 
   private val cluster = Cluster(context.system)
-  //private val selfAddress = cluster.selfAddress
+  private val selfAddress = cluster.selfAddress
 
   // This is for capturing results for ad-hoc jobs. Otherwise when ad-hoc job dies, resultActor also dies,
   // and there is no way to retrieve results.
@@ -88,34 +88,39 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef,
 
   private var jobServerRole: Option[String] = None
   // private val
-  logger.info("AkkaClusterSupervisor initialized on {}", acoClusterSeedNode)
+  logger.info("AkkaClusterSupervisor initialized on {}", selfAddress)
 
 
   override def preStart(): Unit = {
     //cluster.join(selfAddress)
-    cluster.subscribe(acoClusterSeedNode, initialStateMode = InitialStateAsEvents, classOf[MemberEvent])
+    cluster.subscribe(self, initialStateMode = InitialStateAsEvents, classOf[MemberEvent])
     logger.info("AkkaClusterSupervisorActor preStart")
   }
 
   override def postStop(): Unit = {
-    cluster.unsubscribe(acoClusterSeedNode)
-    cluster.leave(acoClusterSeedNode.path.address)
+    cluster.unsubscribe(self)
+    cluster.leave(self.path.address)
     logger.info("AkkaClusterSupervisorActor postStop")
   }
 
   override val supervisorStrategy: OneForOneStrategy =
     OneForOneStrategy(maxNrOfRetries = 10, withinTimeRange = 1 minute) {
-      case _: Throwable => Escalate
+      case e: Exception =>
+        logger.error(s"AkkaClusterSupervisorActor OneForOneStrategy got error from children, " +
+          s"${e.getMessage}", e)
+        Escalate
     }
 
   def wrappedReceive: Receive = {
     case MemberUp(member) =>
+      logger.info(s"Member is up: roles ${member.roles}, address ${member.address}")
       if (member.hasRole("manager")) {
         val memberActors = RootActorPath(member.address) / "user" / "*"
         context.actorSelection(memberActors) ! Identify(memberActors)
       }
 
     case ActorIdentity(memberActors, actorRefOpt) =>
+      logger.info(s"Got ActorIdentity [$memberActors], [$actorRefOpt]")
       actorRefOpt.foreach { actorRef =>
         val actorName = actorRef.path.name
         if (actorName.startsWith("jobManager")) {
@@ -305,13 +310,6 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef,
       }
       cluster.down(actorRef.path.address)
 
-    case RegisterMonitor(monitorPath) =>
-      logger.info(s"Register JobServerMonitor in aco [$monitorPath]")
-      acoMonitor.get ! RegisterMonitorAck(self.path.toString)
-      //val actor = context.actorSelection(ActorPath.fromString(monitorPath))
-      //acoMonitor = Some(actor)
-      //actor ! RegisterMonitorAck(self.path.toString)
-
     case SetJobServerRole(role) =>
       jobServerRole = Some(role)
       sender() ! SetJobServerRoleAck
@@ -355,7 +353,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef,
   private def startContext(name: String, contextConfig: Config, isAdHoc: Boolean)
                           (successFunc: ActorRef => Unit)(failureFunc: Throwable => Unit): Unit = {
     require(!(contexts contains name), "There is already a context named " + name)
-    val contextActorName = s"jobManager-${java.util.UUID.randomUUID().toString.substring(16)}|$name"
+    val contextActorName = s"jobManager-${java.util.UUID.randomUUID().toString.substring(16)}__$name"
 
     logger.info("Starting context with actor name {}", contextActorName)
 
@@ -407,7 +405,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef,
     //Final argument array: master, deployMode, clusterAddress, contextActorname, contextDir, httpPort,
     //  driverCores, driverMemory, mesosClusterDispatcher, Option[PROXY]
     //Notice! The spark.master and MesosClusterDispatcher is not the same, we need BOTH in mesos cluster mode
-    logger.info("Ready to execute JobManager cmd with arguments : {}", managerArgs.mkString(","))
+    logger.info("Ready to execute JobManager cmd with arguments : {}", managerArgs.mkString(" "))
     // extract spark.proxy.user from contextConfig, if available and pass it to manager start command
     if (contextConfig.hasPath(SparkJobUtils.SPARK_PROXY_USER_PARAM)) {
       managerArgs = managerArgs :+ contextConfig.getString(SparkJobUtils.SPARK_PROXY_USER_PARAM)
