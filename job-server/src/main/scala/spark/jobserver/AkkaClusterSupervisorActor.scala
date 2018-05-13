@@ -25,6 +25,7 @@ import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
 import spark.jobserver.JobManagerActor.{GetSparkWebUIUrl, NoSparkWebUI, SparkContextDead, SparkWebUIUrl}
 import spark.jobserver.clients.kubernetes.K8sHttpClient
+import spark.jobserver.common.akka.actor.Reaper.WatchMe
 import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
 
 /**
@@ -313,7 +314,6 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     case SetJobServerRole(role) =>
       jobServerRole = Some(role)
       sender() ! SetJobServerRoleAck
-
   }
 
   private def initContext(contextConfig: Config,

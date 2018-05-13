@@ -27,7 +27,8 @@ object JobManager {
             waitForTermination: (ActorSystem, String, String) => Unit) {
 
     logger.info("Start JobManager with args: {}", args.mkString(","))
-    val clusterAddress = AddressFromURIString.parse(args(0))
+    val clusterAddressStr = args(0)
+    val clusterAddress = AddressFromURIString.parse(clusterAddressStr)
     val managerName = args(1)
 
     //Fetch system config from remote job-server rest api
@@ -64,12 +65,11 @@ object JobManager {
     logger.info("Starting JobManager named " + managerName + " with config {}",
       config.getConfig("spark").root.render())
 
-    val jobManager = system.actorOf(JobManagerActor.props(daoActor), managerName)
+    val jobManager = system.actorOf(JobManagerActor.props(daoActor, Some(clusterAddressStr)), managerName)
 
     //Join aco cluster
     logger.info("Joining cluster at address {}", clusterAddress)
     Cluster(system).join(clusterAddress)
-
     val reaper = system.actorOf(Props[ProductionReaper])
     reaper ! WatchMe(jobManager)
 

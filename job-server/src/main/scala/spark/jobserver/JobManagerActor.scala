@@ -7,7 +7,9 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import aco.jobserver.common.JobServerMessage.{StartJobFailedWrapper, StartJobSucceedWrapper, StartJobWrapper}
 import akka.actor.SupervisorStrategy.Escalate
-import akka.actor.{ActorRef, OneForOneStrategy, PoisonPill, Props}
+import akka.actor.{ActorRef, AddressFromURIString, OneForOneStrategy, PoisonPill, Props}
+import akka.cluster.Cluster
+import akka.cluster.ClusterEvent.{InitialStateAsEvents, UnreachableMember}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.{SparkConf, SparkEnv}
@@ -70,7 +72,8 @@ object JobManagerActor {
 
 
   // Akka 2.2.x style actor props for actor creation
-  def props(daoActor: ActorRef): Props = Props(classOf[JobManagerActor], daoActor)
+  def props(daoActor: ActorRef, clusterAddress: Option[String] = None): Props =
+    Props(classOf[JobManagerActor], daoActor, clusterAddress)
 }
 
 /**
@@ -101,7 +104,7 @@ object JobManagerActor {
   *   }
   * }}}
   */
-class JobManagerActor(daoActor: ActorRef)
+class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   extends InstrumentedActor {
 
   import CommonMessages._
@@ -123,7 +126,7 @@ class JobManagerActor(daoActor: ActorRef)
   // the executors to re-download the jar every time, and causes race conditions.
 
   private val jobCacheSize = Try(config.getInt("spark.job-cache.max-entries")).getOrElse(10000)
-  private val jobCacheEnabled = Try(config.getBoolean("spark.job-cache.enabled")).getOrElse(false)
+  //private val jobCacheEnabled = Try(config.getBoolean("spark.job-cache.enabled")).getOrElse(false)
   // Use Spark Context's built in classloader when SPARK-1230 is merged.
   private val jarLoader = new ContextURLClassLoader(Array[URL](), getClass.getClassLoader)
 
@@ -147,6 +150,8 @@ class JobManagerActor(daoActor: ActorRef)
       |{"status":"%s","classPath":"%s","startTime":"%s",
       |"context":"%s","jobId":"%s","result":"%s","duration":"%s"}
     """.stripMargin
+  private val cluster = Cluster(context.system)
+  private val clusterAddress = clusterAddressOpt.flatMap(s => Some(AddressFromURIString.parse(s)))
 
   private def getEnvironment(_jobId: String): JobEnvironment = {
     val _contextCfg = contextConfig
@@ -161,6 +166,11 @@ class JobManagerActor(daoActor: ActorRef)
         remoteFileCache.getDataFile(dataFile)
       }
     }
+  }
+
+  override def preStart(): Unit = {
+    cluster.subscribe(self, initialStateMode = InitialStateAsEvents, classOf[UnreachableMember])
+    logger.info("JobManagerActor preStart")
   }
 
   override def preRestart(reason: Throwable, message: Option[Any]): Unit = super.preRestart(reason, message)
@@ -189,34 +199,48 @@ class JobManagerActor(daoActor: ActorRef)
   }
 
   def wrappedReceive: Receive = {
-    case Initialize(ctxConfig, resOpt, dataManagerActor) =>
-      contextConfig = ctxConfig
-      logger.info("Starting context with config:\n" + contextConfig.root.render)
-      contextName = contextConfig.getString("context.name")
-      isAdHoc = Try(contextConfig.getBoolean("is-adhoc")).getOrElse(false)
-      statusActor = context.actorOf(JobStatusActor.props(daoActor))
-      resultActor = resOpt.getOrElse(context.actorOf(Props[JobResultActor]))
-      remoteFileCache = new RemoteFileCache(self, dataManagerActor)
-      /*val n = 2 / 0
-      logger.info(s"n = $n")*/
-      try {
-        // Load side jars first in case the ContextFactory comes from it
-        getSideJars(contextConfig).foreach { jarUri =>
-          jarLoader.addURL(new URL(convertJarUriSparkToJava(jarUri)))
-        }
-        factory = getContextFactory()
-        jobContext = factory.makeContext(config, contextConfig, contextName)
-        jobContext.sparkContext.addSparkListener(sparkListener)
-        sparkEnv = SparkEnv.get
-        jobCache = new JobCacheImpl(jobCacheSize, daoActor, jobContext.sparkContext, jarLoader)
-        getSideJars(contextConfig).foreach { jarUri => jobContext.sparkContext.addJar(jarUri) }
-        sender ! Initialized(contextName, resultActor)
-      } catch {
-        case t: Throwable =>
-          logger.error("Failed to create context " + contextName + ", shutting down actor", t)
-          sender ! InitError(t)
-          self ! PoisonPill
+    case UnreachableMember(member) =>
+      logger.info("Member detected as unreachable: {}", member.address)
+      val supervisor = context.parent
+      if (member.address == supervisor.path.address) {
+        Thread.sleep(30000)
+        logger.info(s"try to join cluster [$clusterAddress] again")
+        clusterAddress.foreach(cluster.join)
       }
+
+    case Initialize(ctxConfig, resOpt, dataManagerActor) =>
+      if (statusActor == null) {
+        contextConfig = ctxConfig
+        logger.info("Starting context with config:\n" + contextConfig.root.render)
+        contextName = contextConfig.getString("context.name")
+        isAdHoc = Try(contextConfig.getBoolean("is-adhoc")).getOrElse(false)
+        statusActor = context.actorOf(JobStatusActor.props(daoActor))
+        resultActor = resOpt.getOrElse(context.actorOf(Props[JobResultActor]))
+        remoteFileCache = new RemoteFileCache(self, dataManagerActor)
+        try {
+          // Load side jars first in case the ContextFactory comes from it
+          getSideJars(contextConfig).foreach { jarUri =>
+            jarLoader.addURL(new URL(convertJarUriSparkToJava(jarUri)))
+          }
+          factory = getContextFactory()
+          jobContext = factory.makeContext(config, contextConfig, contextName)
+          jobContext.sparkContext.addSparkListener(sparkListener)
+          sparkEnv = SparkEnv.get
+          jobCache = new JobCacheImpl(jobCacheSize, daoActor, jobContext.sparkContext, jarLoader)
+          getSideJars(contextConfig).foreach { jarUri => jobContext.sparkContext.addJar(jarUri) }
+          sender ! Initialized(contextName, resultActor)
+        } catch {
+          case t: Throwable =>
+            logger.error("Failed to create context " + contextName + ", shutting down actor", t)
+            sender ! InitError(t)
+            self ! PoisonPill
+        }
+      } else {
+        logger.info(s"statusActor is not null, it's a rejoined JobManagerActor[$contextName], " +
+          "do not need to be initialized")
+        sender ! Initialized(contextName, resultActor)
+      }
+
 
     case StartJobWrapper(appName, classPath, jobId, parameters) =>
       val requestWorker = sender()
