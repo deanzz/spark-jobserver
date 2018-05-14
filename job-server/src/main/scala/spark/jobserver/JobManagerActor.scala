@@ -9,7 +9,7 @@ import aco.jobserver.common.JobServerMessage.{StartJobFailedWrapper, StartJobSuc
 import akka.actor.SupervisorStrategy.Escalate
 import akka.actor.{ActorRef, AddressFromURIString, OneForOneStrategy, PoisonPill, Props}
 import akka.cluster.Cluster
-import akka.cluster.ClusterEvent.{InitialStateAsEvents, UnreachableMember}
+import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp, UnreachableMember}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.{SparkConf, SparkEnv}
@@ -27,6 +27,8 @@ import spark.jobserver.util.{ContextURLClassLoader, SparkJobUtils}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 import spark.jobserver.common.akka.InstrumentedActor
+
+import scala.collection.mutable
 
 object JobManagerActor {
 
@@ -152,6 +154,9 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
     """.stripMargin
   private val cluster = Cluster(context.system)
   private val clusterAddress = clusterAddressOpt.flatMap(s => Some(AddressFromURIString.parse(s)))
+  private val unreachableMembers = mutable.Set.empty[String]
+  //private var rejoinTimes = 5
+  //private var rejoining = false
 
   private def getEnvironment(_jobId: String): JobEnvironment = {
     val _contextCfg = contextConfig
@@ -169,16 +174,18 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   }
 
   override def preStart(): Unit = {
-    cluster.subscribe(self, initialStateMode = InitialStateAsEvents, classOf[UnreachableMember])
+    cluster.subscribe(self, initialStateMode = InitialStateAsEvents,
+      classOf[UnreachableMember]/*, classOf[MemberEvent]*/)
     logger.info("JobManagerActor preStart")
   }
 
-  override def preRestart(reason: Throwable, message: Option[Any]): Unit = super.preRestart(reason, message)
-
   override def postStop() {
-    logger.info("Shutting down SparkContext {}", contextName)
+    logger.info("JobManagerActor Shutting down SparkContext {}", contextName)
+    cluster.unsubscribe(self)
     Option(jobContext).foreach(_.stop())
   }
+
+  override def preRestart(reason: Throwable, message: Option[Any]): Unit = super.preRestart(reason, message)
 
   override val supervisorStrategy: OneForOneStrategy =
     OneForOneStrategy(maxNrOfRetries = 10, withinTimeRange = 1 minute) {
@@ -199,13 +206,52 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   }
 
   def wrappedReceive: Receive = {
+    /*case MemberUp(member) =>
+      logger.info(s"Member is up: roles ${member.roles}, address ${member.address}")
+      if (member.hasRole("manager") && member.address == cluster.selfAddress) {
+        logger.info(s"reset rejoin parameters")
+        synchronized{
+          unreachableMembers.clear()
+          rejoinTimes = 5
+          rejoining = false
+        }
+      }
+
     case UnreachableMember(member) =>
       logger.info("Member detected as unreachable: {}", member.address)
-      val supervisor = context.parent
-      if (member.address == supervisor.path.address) {
-        Thread.sleep(30000)
-        logger.info(s"try to join cluster [$clusterAddress] again")
-        clusterAddress.foreach(cluster.join)
+      synchronized(unreachableMembers += member.address.toString)
+      logger.info(s"unreachableMembers:\n${unreachableMembers.mkString("\n")}")
+      if (rejoinTimes <= 0) {
+        self ! PoisonPill
+      } else {
+        if (!rejoining) {
+          cluster.leave(cluster.selfAddress)
+          Thread.sleep(5000)
+          synchronized(rejoining = true)
+          rejoin()
+        }
+      }
+
+      def rejoin(): Unit = {
+        if (unreachableMembers.nonEmpty && rejoinTimes > 0) {
+          logger.info(s"try to join cluster [$clusterAddress] again, remaining $rejoinTimes times")
+          clusterAddress.foreach{
+            address =>
+              logger.info(s"rejoining the cluster [$address]")
+              cluster.join(address)
+          }
+          synchronized(rejoinTimes = rejoinTimes - 1)
+          Thread.sleep(10000)
+          rejoin()
+        }
+      }*/
+
+    case UnreachableMember(member) =>
+      logger.info("Member detected as unreachable: {}", member.address)
+      unreachableMembers += member.address.toString
+      logger.info(s"unreachableMembers:\n${unreachableMembers.mkString("\n")}")
+      if (unreachableMembers.size >= 3) {
+        self ! PoisonPill
       }
 
     case Initialize(ctxConfig, resOpt, dataManagerActor) =>

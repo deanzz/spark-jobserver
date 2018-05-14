@@ -25,7 +25,6 @@ import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
 import spark.jobserver.JobManagerActor.{GetSparkWebUIUrl, NoSparkWebUI, SparkContextDead, SparkWebUIUrl}
 import spark.jobserver.clients.kubernetes.K8sHttpClient
-import spark.jobserver.common.akka.actor.Reaper.WatchMe
 import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
 
 /**
@@ -87,7 +86,6 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     settings = ClusterSingletonProxySettings(context.system).withRole("scheduler")),
     name = "jobserver-monitor-proxy"))
 
-  private var jobServerRole: Option[String] = None
   // private val
   logger.info("AkkaClusterSupervisor initialized on {}", selfAddress)
 
@@ -296,24 +294,24 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         if(enableK8sCheck){
           Try(k8sClient.podLog(name)) match {
             case Success(log) =>
-              acoMonitor.get ! ContextTerminated(name, jobServerRole.getOrElse(""), log)
+              acoMonitor.get ! ContextTerminated(name, log)
             case Failure(e) =>
               val errMsg = e match {
                 case _: TimeoutException => "Connect kubernetes API timeout!!"
                 case _ => s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
               }
-              acoMonitor.get ! ContextTerminated(name, jobServerRole.getOrElse(""), errMsg)
+              acoMonitor.get ! ContextTerminated(name, errMsg)
           }
         } else {
-          acoMonitor.get ! ContextTerminated(name, jobServerRole.getOrElse(""),
+          acoMonitor.get ! ContextTerminated(name,
             "No error log when kubernetes.check.enable is false")
         }
       }
       cluster.down(actorRef.path.address)
 
-    case SetJobServerRole(role) =>
+    /*case SetJobServerRole(role) =>
       jobServerRole = Some(role)
-      sender() ! SetJobServerRoleAck
+      sender() ! SetJobServerRoleAck*/
   }
 
   private def initContext(contextConfig: Config,
