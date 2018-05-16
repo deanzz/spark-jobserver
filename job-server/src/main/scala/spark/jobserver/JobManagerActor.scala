@@ -5,11 +5,11 @@ import java.net.{URI, URL}
 import java.util.concurrent.Executors._
 import java.util.concurrent.atomic.AtomicInteger
 
-import aco.jobserver.common.JobServerMessage.{StartJobFailedWrapper, StartJobSucceedWrapper, StartJobWrapper}
+import aco.jobserver.common.JobServerMessage._
 import akka.actor.SupervisorStrategy.Escalate
 import akka.actor.{ActorRef, AddressFromURIString, OneForOneStrategy, PoisonPill, Props}
 import akka.cluster.Cluster
-import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp, UnreachableMember}
+import akka.cluster.ClusterEvent.{InitialStateAsEvents, UnreachableMember}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.{SparkConf, SparkEnv}
@@ -17,8 +17,6 @@ import org.apache.spark.scheduler.SparkListener
 import org.apache.spark.scheduler.SparkListenerApplicationEnd
 import org.joda.time.DateTime
 import org.scalactic._
-import spark.jobserver.ContextSupervisor.ContextInitError
-import spark.jobserver.JobInfoActor.{JobConfigStored, StoreJobConfig}
 import spark.jobserver.api.{DataFileCache, JobEnvironment}
 import spark.jobserver.context.{JobContainer, SparkContextFactory}
 import spark.jobserver.io._
@@ -175,7 +173,7 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
 
   override def preStart(): Unit = {
     cluster.subscribe(self, initialStateMode = InitialStateAsEvents,
-      classOf[UnreachableMember]/*, classOf[MemberEvent]*/)
+      classOf[UnreachableMember] /*, classOf[MemberEvent]*/)
     logger.info("JobManagerActor preStart")
   }
 
@@ -296,6 +294,7 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
       self ! StartJob(appName, classPath, jobConfig, asyncEvents, Some(jobId), Some(requestWorker))
 
     case StartJob(appName, classPath, jobConfig, events, jobId, workerActor) => {
+      logger.info(s"StartJob, jobId [$jobId], classPath [$classPath], workerActor [$workerActor]")
       val loadedJars = jarLoader.getURLs
       getSideJars(jobConfig).foreach { jarUri =>
         val jarToLoad = new URL(convertJarUriSparkToJava(jarUri))
@@ -407,7 +406,7 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
     val lastUploadTimeAndType = resp.uploadTimeAndType
     if (lastUploadTimeAndType.isEmpty) {
       if (workerActor.isDefined) {
-        nofifyStartJobFailedToAco(workerActor.get, jobId, NoSuchApplication, Some(appName))
+        notifyStartJobFailedToAco(workerActor.get, jobId, NoSuchApplication, Some(appName))
       }
       return failed(NoSuchApplication)
     }
@@ -418,17 +417,17 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
       case Good(container) => container
       case Bad(JobClassNotFound) =>
         if (workerActor.isDefined) {
-          nofifyStartJobFailedToAco(workerActor.get, jobId, NoSuchClass, Some(classPath))
+          notifyStartJobFailedToAco(workerActor.get, jobId, NoSuchClass, Some(classPath))
         }
         return failed(NoSuchClass)
       case Bad(JobWrongType) =>
         if (workerActor.isDefined) {
-          nofifyStartJobFailedToAco(workerActor.get, jobId, WrongJobType)
+          notifyStartJobFailedToAco(workerActor.get, jobId, WrongJobType)
         }
         return failed(WrongJobType)
       case Bad(JobLoadError(ex)) =>
         if (workerActor.isDefined) {
-          nofifyStartJobFailedToAco(workerActor.get, jobId, JobLoadError(ex))
+          notifyStartJobFailedToAco(workerActor.get, jobId, JobLoadError(ex))
         }
         return failed(JobLoadingError(ex))
     }
@@ -461,7 +460,7 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
       currentRunningJobs.decrementAndGet()
       val msg = NoJobSlotsAvailable(maxRunningJobs)
       sender ! msg
-      nofifyStartJobFailedToAco(workerActor, jobId, msg, Some(contextName))
+      notifyStartJobFailedToAco(workerActor, jobId, msg, Some(contextName))
       return Future[Any](None)(context.dispatcher)
     }
 
@@ -476,43 +475,62 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
         // NOTE: This may not even be necessary if we set the driver ActorSystem classloader correctly
         Thread.currentThread.setContextClassLoader(jarLoader)
         val job = container.getSparkJob
-        try {
-          statusActor ! JobStatusActor.JobInit(jobInfo)
-          val jobC = jobContext.asInstanceOf[job.C]
-          val jobEnv = getEnvironment(jobId)
-          job.validate(jobC, jobEnv, jobConfig) match {
-            case Bad(reasons) =>
-              val err = new Throwable(reasons.toString)
-              val msg = JobValidationFailed(jobId, DateTime.now(), err)
-              statusActor ! msg
-              nofifyStartJobFailedToAco(workerActor, jobId, msg)
-              throw err
-            case Good(jobData) =>
-              val sc = jobContext.sparkContext
-              sc.setJobGroup(jobId, s"Job group for $jobId and spark context ${sc.applicationId}", true)
-              statusActor ! JobStarted(jobId, jobInfo)
+        statusActor ! JobStatusActor.JobInit(jobInfo)
+        val jobC = jobContext.asInstanceOf[job.C]
+        val jobEnv = getEnvironment(jobId)
+        job.validate(jobC, jobEnv, jobConfig) match {
+          case Bad(reasons) =>
+            val err = new Throwable(reasons.toString)
+            val msg = JobValidationFailed(jobId, DateTime.now(), err)
+            statusActor ! msg
+            notifyStartJobFailedToAco(workerActor, jobId, msg)
+            throw err
+          case Good(jobData) =>
+            val sc = jobContext.sparkContext
+            sc.setJobGroup(jobId, s"Job group for $jobId and spark context ${sc.applicationId}", true)
+            statusActor ! JobStarted(jobId, jobInfo)
 
-              val resp = startJobSucceedTpl.format(
-                JobStatus.Started, jobInfo.classPath, jobInfo.startTime, jobInfo.contextName,
-                jobId, "", getJobDurationString(jobInfo.jobLengthMillis))
-              workerActor ! StartJobSucceedWrapper(jobId, resp)
+            val resp = startJobSucceedTpl.format(
+              JobStatus.Started, jobInfo.classPath, jobInfo.startTime, jobInfo.contextName,
+              jobId, "", getJobDurationString(jobInfo.jobLengthMillis))
+            workerActor ! StartJobSucceedWrapper(jobId, resp)
 
-              job.runJob(jobC, jobEnv, jobData)
-          }
-        } finally {
-          org.slf4j.MDC.remove("jobId")
+            try {
+              val result = job.runJob(jobC, jobEnv, jobData)
+              logger.info(s"Running job [$jobId] succeed. result is \n${result.toString}")
+              result
+            } catch {
+              case e: Throwable =>
+                logger.error(s"Init job error, ${e.getMessage}", e)
+                val senderInfo = jobConfig.getConfig("senderInfo")
+                val jobServerSchema = senderInfo.getString("schema")
+                val jobServerHost = senderInfo.getString("host")
+                val jobServerPort = senderInfo.getInt("port")
+                val jobServerRole = senderInfo.getString("role")
+                val jobServerAuthType = Try(senderInfo.getString("authType")).getOrElse("")
+                val jobServerCredential = Try(senderInfo.getString("credential")).getOrElse("")
+                val errMsg = e.getMessage
+                val errClass = e.getClass.getName
+                val errStack = e.getStackTrace.map(_.toString).mkString("\n")
+                val graphId = senderInfo.getString("graphId")
+                val nodeId = senderInfo.getString("nodeId")
+                val topicId = senderInfo.getString("topicId")
+
+                workerActor ! InitJobFailed(jobId, jobServerSchema, jobServerHost, jobServerPort,
+                  jobServerRole, jobServerAuthType, jobServerCredential, errMsg, errClass,
+                  errStack, graphId, nodeId, topicId)
+                throw e
+            }
         }
       } catch {
-        case e: java.lang.AbstractMethodError => {
-          logger.error("Oops, there's an AbstractMethodError... maybe you compiled " +
-            "your code with an older version of SJS? here's the exception:", e)
+        case e: Throwable =>
+          logger.error(s"Submit job error, ${e.getMessage}", e)
+          notifyStartJobFailedToAco(workerActor, jobId, e)
           throw e
-        }
-        case e: Throwable => {
-          logger.error("Got Throwable", e)
-          throw e
-        };
+      } finally {
+        org.slf4j.MDC.remove("jobId")
       }
+
     }(executionContext).andThen {
       case Success(result: Any) =>
         // TODO: If the result is Stream[_] and this is running with context-per-jvm=true configuration
@@ -527,12 +545,12 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
         resultActor ! JobResult(jobId, result)
         statusActor ! JobFinished(jobId, DateTime.now())
       case Failure(error: Throwable) =>
+        logger.error(s"Got job error, ${error.getMessage}", error)
         // Wrapping the error inside a RuntimeException to handle the case of throwing custom exceptions.
         val wrappedError = wrapInRuntimeException(error)
         // If and only if job validation fails, JobErroredOut message is dropped silently in JobStatusActor.
         val msg = JobErroredOut(jobId, DateTime.now(), wrappedError)
         statusActor ! msg
-        nofifyStartJobFailedToAco(workerActor, jobId, msg)
         logger.error("Exception from job " + jobId + ": ", error)
     }(executionContext).andThen {
       case _ =>
@@ -614,22 +632,22 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   }
 
   def errResp(errMsg: String): String = {
-    s"""{"status":"${JobStatus.Error}","result":"$errMsg""""
+    s"""{"status":"${JobStatus.Error}","result":"$errMsg"}"""
   }
 
   def errResp(t: Throwable, status: String): String = {
-    s"""{"status":"$status","result":${formatException(t)})"""
+    s"""{"status":"$status","result":${formatException(t)}}"""
   }
 
   def errResp(errMsg: String, status: String): String = {
-    s"""{"status":"$status","result":$errMsg)"""
+    s"""{"status":"$status","result":"$errMsg"}"""
   }
 
   def errResp(jobId: String, t: Throwable, status: String): String = {
-    s"""{"jobId":"$jobId","status":"$status","result":${formatException(t)})"""
+    s"""{"jobId":"$jobId","status":"$status","result":${formatException(t)}}"""
   }
 
-  def nofifyStartJobFailedToAco(workerActor: ActorRef, jobId: String,
+  def notifyStartJobFailedToAco(workerActor: ActorRef, jobId: String,
                                 errMsg: Any, errMsgArg: Option[String] = None): Unit = {
     val resp = errMsg match {
       case NoJobSlotsAvailable(maxJobSlots) =>
@@ -647,7 +665,7 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
       case WrongJobType => errResp("Invalid job type for this context")
       case JobLoadingError(ex) => errResp(ex, "JOB LOADING FAILED")
       //case ContextInitError(ex) => errResp(ex, "CONTEXT INIT FAILED")
-      case e: Exception => errResp(e, "ERROR")
+      case e: Throwable => errResp(e, "ERROR")
       case other => errResp(other.toString)
     }
     workerActor ! StartJobFailedWrapper(jobId, resp)
