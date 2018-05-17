@@ -1,9 +1,17 @@
 package spark.jobserver.clients.kubernetes
 
+import java.security.SecureRandom
+import java.util.concurrent.TimeUnit
+import javax.net.ssl.{SSLContext, TrustManager}
+
 import akka.actor.ActorSystem
+import akka.io.IO
 import com.typesafe.config.Config
 import org.slf4j.LoggerFactory
 import spark.jobserver.clients.kubernetes.json.JsonUtils
+import spark.jobserver.clients.kubernetes.ssl.DummyTrustManager
+import spray.can.Http
+import spray.can.Http.{HostConnectorInfo, HostConnectorSetup}
 import spray.client.pipelining._
 import spray.http.{HttpRequest, HttpResponse}
 
@@ -11,18 +19,42 @@ import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.util.{Failure, Success, Try}
 import scala.concurrent.ExecutionContext.Implicits.global
+import akka.pattern.ask
 
 class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
 
   private val log = LoggerFactory.getLogger(getClass)
   private val host = config.getString("kubernetes.api.host")
+  private val port = config.getInt("kubernetes.api.port")
   private val defaultNamespace = config.getString("kubernetes.api.namespace")
   private val requestTimeout = config.getInt("kubernetes.api.timeout.seconds")
 
-  def pipeline: HttpRequest => Future[HttpResponse] = sendReceive
+  implicit def sslContext: SSLContext = {
+    val context = SSLContext.getInstance("TLS")
+    context.init(null, Array[TrustManager](new DummyTrustManager), new SecureRandom())
+    context
+  }
+  private implicit val timeout = akka.util.Timeout(requestTimeout, TimeUnit.SECONDS)
+  private val connection = {
+    Await.result((IO(Http) ? HostConnectorSetup(host, port = port, sslEncryption = true)).map {
+      case HostConnectorInfo(hostConnector, _) => hostConnector }, requestTimeout seconds)
+  }
+
+  def pipeline: HttpRequest => Future[HttpResponse] = {
+    sendReceive(connection)
+  }
+
+  /*def pipeline: HttpRequest => Future[HttpResponse] = {
+    val connection = {
+      Await.result((IO(Http) ? HostConnectorSetup(host, port = port, sslEncryption = true)).map {
+        case HostConnectorInfo(hostConnector, _) => hostConnector }, requestTimeout seconds)
+    }
+    sendReceive(connection)
+  }*/
 
   def podStatus(name: String, namespace: String = defaultNamespace): String = {
-    val url = s"$host/api/v1/namespaces/$namespace/pods/$name/status"
+    val url = s"/api/v1/namespaces/$namespace/pods/$name/status"
+    log.info(s"podStatus.uri = $url")
     val future = pipeline(Get(url)).map(res => parsePodStatusResp(res.entity.asString))
     Try(Await.result(future, requestTimeout seconds)) match {
       case Success(res) => res
@@ -34,7 +66,9 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
 
   def podLog(name: String, namespace: String = defaultNamespace,
              previous: Boolean = true, tailLines: Int = 200): String = {
-    val url = s"$host/api/v1/namespaces/$namespace/pods/$name/log?previous=$previous&tailLines=$tailLines"
+    val url =
+      s"/api/v1/namespaces/$namespace/pods/$name/log?previous=$previous&tailLines=$tailLines"
+    log.info(s"podLog.uri = $url")
     val future = pipeline(Get(url)).map(res => res.entity.asString)
     Try(Await.result(future, requestTimeout seconds)) match {
       case Success(res) => res
@@ -46,6 +80,9 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
 
   private def parsePodStatusResp(resp: String) = {
     val map = JsonUtils.mapFromJson(resp)
+    log.info(s"resp:\n$resp")
+    log.info("parsePodStatusResp:")
+    map.foreach(println)
     val status = map("status")
     if (status.asInstanceOf[String] == "Failure") {
       map("reason").asInstanceOf[String]
