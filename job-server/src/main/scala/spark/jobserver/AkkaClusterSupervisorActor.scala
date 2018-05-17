@@ -117,6 +117,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         val memberActors = RootActorPath(member.address) / "user" / "*"
         context.actorSelection(memberActors) ! Identify(memberActors)
       }
+      //todo 当发觉scheduler重新启动后，重新AddJobServer到scheduler
 
     case ActorIdentity(memberActors, actorRefOpt) =>
       logger.info(s"Got ActorIdentity [$memberActors], [$actorRefOpt]")

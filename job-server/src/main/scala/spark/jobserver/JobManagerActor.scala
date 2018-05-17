@@ -153,8 +153,8 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   private val cluster = Cluster(context.system)
   private val clusterAddress = clusterAddressOpt.flatMap(s => Some(AddressFromURIString.parse(s)))
   private val unreachableMembers = mutable.Set.empty[String]
-  //private var rejoinTimes = 5
-  //private var rejoining = false
+  private val AbstractPBJobExceptionKey = "AbstractPBJob_"
+
 
   private def getEnvironment(_jobId: String): JobEnvironment = {
     val _contextCfg = contextConfig
@@ -498,27 +498,35 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
             try {
               val result = job.runJob(jobC, jobEnv, jobData)
               logger.info(s"Running job [$jobId] succeed. result is \n${result.toString}")
+              workerActor ! RunningJobResult(jobId, succeed = true, result.toString)
               result
             } catch {
               case e: Throwable =>
-                logger.error(s"Init job error, ${e.getMessage}", e)
-                val senderInfo = jobConfig.getConfig("senderInfo")
-                val jobServerSchema = senderInfo.getString("schema")
-                val jobServerHost = senderInfo.getString("host")
-                val jobServerPort = senderInfo.getInt("port")
-                val jobServerRole = senderInfo.getString("role")
-                val jobServerAuthType = Try(senderInfo.getString("authType")).getOrElse("")
-                val jobServerCredential = Try(senderInfo.getString("credential")).getOrElse("")
-                val errMsg = e.getMessage
-                val errClass = e.getClass.getName
-                val errStack = e.getStackTrace.map(_.toString).mkString("\n")
-                val graphId = senderInfo.getString("graphId")
-                val nodeId = senderInfo.getString("nodeId")
-                val topicId = senderInfo.getString("topicId")
+                val msg = e.getMessage
+                if (msg.startsWith(AbstractPBJobExceptionKey)) {
+                  val errJsonStart = msg.indexOf(AbstractPBJobExceptionKey) + AbstractPBJobExceptionKey.length
+                  val errJson = msg.substring(errJsonStart)
+                  workerActor ! RunningJobResult(jobId, succeed = false, errJson)
+                } else {
+                  logger.error(s"Init job error, ${e.getMessage}", e)
+                  val senderInfo = jobConfig.getConfig("senderInfo")
+                  val jobServerSchema = senderInfo.getString("schema")
+                  val jobServerHost = senderInfo.getString("host")
+                  val jobServerPort = senderInfo.getInt("port")
+                  val jobServerRole = senderInfo.getString("role")
+                  val jobServerAuthType = Try(senderInfo.getString("authType")).getOrElse("")
+                  val jobServerCredential = Try(senderInfo.getString("credential")).getOrElse("")
+                  val errMsg = e.getMessage
+                  val errClass = e.getClass.getName
+                  val errStack = e.getStackTrace.map(_.toString).mkString("\n")
+                  val graphId = senderInfo.getString("graphId")
+                  val nodeId = senderInfo.getString("nodeId")
+                  val topicId = senderInfo.getString("topicId")
 
-                workerActor ! InitJobFailed(jobId, jobServerSchema, jobServerHost, jobServerPort,
-                  jobServerRole, jobServerAuthType, jobServerCredential, errMsg, errClass,
-                  errStack, graphId, nodeId, topicId)
+                  workerActor ! InitJobFailed(jobId, jobServerSchema, jobServerHost, jobServerPort,
+                    jobServerRole, jobServerAuthType, jobServerCredential, errMsg, errClass,
+                    errStack, graphId, nodeId, topicId)
+                }
                 throw e
             }
         }
