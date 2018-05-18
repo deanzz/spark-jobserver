@@ -118,6 +118,10 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         context.actorSelection(memberActors) ! Identify(memberActors)
       }
       //todo 当发觉scheduler重新启动后，重新AddJobServer到scheduler
+      if (member.hasRole("scheduler")) {
+        Thread.sleep(3000)
+        acoMonitor.get ! AddJobServerWrapper(self.path.toString)
+      }
 
     case ActorIdentity(memberActors, actorRefOpt) =>
       logger.info(s"Got ActorIdentity [$memberActors], [$actorRefOpt]")
@@ -143,34 +147,35 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       sender ! contexts.keys.toSeq
 
     case AddContextWrapper(name, operatorId, parameters, operation) =>
-      logger.info(s"Start AddContextWrapper ($name)")
+      val lowerName = name.toLowerCase
+      logger.info(s"Start AddContextWrapper ($lowerName)")
       val requestWorker = sender()
 
       def create(): Unit = {
         val paramMap = parameters2Map(parameters)
         val contextConfig = ConfigFactory.parseMap(paramMap.asJava)
-        self ! AddContext(name, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
+        self ! AddContext(lowerName, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
       }
 
       if (enableK8sCheck) {
-        Try(k8sClient.podStatus(name)) match {
+        Try(k8sClient.podStatus(lowerName)) match {
           case Success(res) =>
-            logger.info(s"The status of context [$name] in kubernetes is $res")
+            logger.info(s"The status of context [$lowerName] in kubernetes is $res")
             res match {
               case "NotFound" =>
                 create()
               case "Failed" | "Unknown" =>
-                k8sClient.deletePod(name)
+                k8sClient.deletePod(lowerName)
                 create()
               case _ =>
-                contexts.get(name) match {
+                contexts.get(lowerName) match {
                   case Some(ctx) =>
-                    val succeed = AddContextSucceedWrapper(name, ctx._1.path.toString,
-                      operatorId, s"context $name exists", operation)
+                    val succeed = AddContextSucceedWrapper(lowerName, ctx._1.path.toString,
+                      operatorId, s"context $lowerName exists", operation)
                     requestWorker ! succeed
                     acoMonitor.get ! succeed
                   case _ =>
-                    val failed = AddContextFailedWrapper(name,
+                    val failed = AddContextFailedWrapper(lowerName,
                       "Kubernetes error,Inconsistent jobserver and kubernetes status", operatorId, operation)
                     requestWorker ! failed
                     acoMonitor.get ! failed
@@ -180,14 +185,15 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
             logger.error(s"AddContextWrapper error, ${e.getMessage}", e)
             e match {
               case _: TimeoutException =>
-                val failed = AddContextFailedWrapper(name,
+                val failed = AddContextFailedWrapper(lowerName,
                   s"Kubernetes error, Connect kubernetes API timeout!!",
                   operatorId, operation)
                 requestWorker ! failed
                 acoMonitor.get ! failed
               case _ =>
                 val err = s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
-                val failed = AddContextFailedWrapper(name, s"Kubernetes error, $err", operatorId, operation)
+                val failed = AddContextFailedWrapper(
+                  lowerName, s"Kubernetes error, $err", operatorId, operation)
                 requestWorker ! failed
                 acoMonitor.get ! failed
             }

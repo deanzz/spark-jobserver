@@ -51,6 +51,7 @@ object JsonUtils {
       case o: JsObject => mapFormat[String, Any].read(value)
       case JsTrue => true
       case JsFalse => false
+      case null => null
       case x => deserializationError("Do not understand how to deserialize " + x)
     }
   }

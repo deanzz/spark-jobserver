@@ -91,10 +91,8 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
   }
 
   private def parsePodStatusResp(resp: String) = {
-    val map = JsonUtils.mapFromJson(resp)
     log.info(s"resp:\n$resp")
-    log.info("parsePodStatusResp:")
-    map.foreach(println)
+    val map = JsonUtils.mapFromJson(resp)
     val status = map("status")
     if (status.asInstanceOf[String] == "Failure") {
       map("reason").asInstanceOf[String]
