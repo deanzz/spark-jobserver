@@ -32,12 +32,16 @@ object JobManager {
     val managerName = args(1)
 
     //Fetch system config from remote job-server rest api
-    if (args.length < 3 || clusterAddress.host.isEmpty) {
+    if (args.length < 4 || clusterAddress.host.isEmpty) {
       System.err.println("Could not find job server http address from arguments")
       sys.exit(1)
     }
-    val jobServerAddress = clusterAddress.host.getOrElse("") + ":" + args(2)
-    val configStr = scala.io.Source.fromURL(s"http://$jobServerAddress/config").mkString
+    val jobServerHost = args(3)
+    val jobServerPort = args(2)
+    val jobServerAddress = s"$jobServerHost:$jobServerPort"
+    val configUrl = s"http://$jobServerAddress/config"
+    logger.info(s"configUrl = $configUrl")
+    val configStr = scala.io.Source.fromURL(configUrl).mkString
 
     val defaultConfig = ConfigFactory.load()
     val systemConfig = ConfigFactory.parseString(configStr).withFallback(defaultConfig)

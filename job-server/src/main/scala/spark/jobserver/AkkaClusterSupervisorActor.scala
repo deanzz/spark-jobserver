@@ -155,11 +155,14 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       if (enableK8sCheck) {
         Try(k8sClient.podStatus(name)) match {
           case Success(res) =>
+            logger.info(s"The status of context [$name] in kubernetes is $res")
             res match {
               case "NotFound" =>
                 create()
-              case other =>
-                logger.info(s"The status of context [$name] in kubernetes is $other")
+              case "Failed" | "Unknown" =>
+                k8sClient.deletePod(name)
+                create()
+              case _ =>
                 contexts.get(name) match {
                   case Some(ctx) =>
                     val succeed = AddContextSucceedWrapper(name, ctx._1.path.toString,
@@ -375,17 +378,17 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     // aco cluster address
     val clusterAddress = config.getString("aco.cluster.seed-node")
     var managerArgs = Seq(master, deployMode, clusterAddress, contextActorName, contextDir.toString,
-      config.getString("spark.jobserver.port"))
+      config.getString("spark.jobserver.port"), selfAddress.host.getOrElse(""))
     // Add driver cores and memory argument
     if (contextConfig.hasPath("driver-cores")) {
       managerArgs = managerArgs :+ contextConfig.getString("driver-cores")
     } else {
-      managerArgs = managerArgs :+ "1"
+      managerArgs = managerArgs :+ "NULL"
     }
     if (contextConfig.hasPath("driver-memory")) {
       managerArgs = managerArgs :+ contextConfig.getString("driver-memory")
     } else {
-      managerArgs = managerArgs :+ "0"
+      managerArgs = managerArgs :+ "NULL"
     }
 
     // Add mesos dispatcher address to arguments
@@ -397,6 +400,24 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
     if (isKubernetesMode) {
       managerArgs = managerArgs :+ encodedContextName.toLowerCase
+    } else {
+      managerArgs = managerArgs :+ "NULL"
+    }
+
+    if (isKubernetesMode) {
+      managerArgs = managerArgs :+ contextConfig.getString("num-cpu-cores")
+    } else {
+      managerArgs = managerArgs :+ "NULL"
+    }
+
+    if (isKubernetesMode) {
+      managerArgs = managerArgs :+ contextConfig.getString("memory-per-node")
+    } else {
+      managerArgs = managerArgs :+ "NULL"
+    }
+
+    if (isKubernetesMode) {
+      managerArgs = managerArgs :+ Try(contextConfig.getString("executor-instances")).getOrElse("2")
     } else {
       managerArgs = managerArgs :+ "NULL"
     }

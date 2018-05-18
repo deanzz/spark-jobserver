@@ -18,76 +18,147 @@ GC_OPTS="-XX:+UseConcMarkSweepGC
          -XX:MaxPermSize=512m
          -XX:+CMSClassUnloadingEnabled "
 
+ALLUXIO_OPTS="-Dalluxio.user.file.writetype.default=THROUGH -Dalluxio.user.file.readtype.default=NO_CACHE -Dalluxio.user.file.delete.unchecked=true "
+
 JAVA_OPTS="-XX:MaxDirectMemorySize=$MAX_DIRECT_MEMORY
-           -XX:+HeapDumpOnOutOfMemoryError -Djava.net.preferIPv4Stack=true"
+           -XX:+HeapDumpOnOutOfMemoryError -Djava.net.preferIPv4Stack=true
+           -DconfigGroupName=kmtest
+           -DconfigServiceName=sparkJobs
+           -DconfigServerHost=config-server
+           -DconfigServerPort=2502
+           $ALLUXIO_OPTS
+          "
 
 MAIN="spark.jobserver.JobManager"
+MASTER=$1
+DEPLOY_MODE=$2
+CLUSTER_ENTRY_NODE=$3
+CONTEXT_ACTOR_NAME=$4
+CONTEXT_DIR=$5
+JOBSERVER_PORT=$6
+JOBSERVER_HOST=$7
+DRIVER_CORES=$8
+DRIVER_MEMORY=$9
+MESOS_DISPATCHER=${10}
+K8S_POD_NAME=${11}
+EXECUTOR_CORES=${12}
+EXECUTOR_MEMORY=${13}
+EXECUTOR_INSTANCES=${14}
+SPARK_PROXY_USER_PARAM=${15}
 
 # copy files via spark-submit and read them from current (container) dir
-if [ $2 = "cluster" -a -z "$REMOTE_JOBSERVER_DIR" ]; then
+if [ $DEPLOY_MODE = "cluster" -a -z "$REMOTE_JOBSERVER_DIR" ]; then
   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS
-    --master $1 --deploy-mode cluster
+    --master $MASTER --deploy-mode cluster
     --conf spark.yarn.submit.waitAppCompletion=false
-    --files $appdir/log4j-cluster.properties,$conffile"
+    --conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
+    --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
+    --conf spark.kubernetes.driver.label.spark-driver=ture
+  "
+#--conf spark.kubernetes.driver.pod.name=spark-driver
+#--conf spark.executor.instances=1
+
   JAR_FILE="$appdir/spark-job-server.jar"
-  CONF_FILE=$(basename $conffile)
-  LOGGING_OPTS="-Dlog4j.configuration=log4j-cluster.properties"
+  # CONF_FILE=$(basename $conffile)
+  # LOGGING_OPTS="-Dlog4j.configuration=log4j-cluster.properties"
 
 # mesos cluster mode
-elif [ $2 == "cluster" -a "$MESOS_CLUSTER_DISPATCHER" ]; then
-  if [ $9 != "DEFAULT_MESOS_DISPATCHER" ]; then
-    MESOS_CLUSTER_DISPATCHER=$9
+elif [ $DEPLOY_MODE == "cluster" -a "$MESOS_CLUSTER_DISPATCHER" ]; then
+  if [ $MESOS_DISPATCHER != "DEFAULT_MESOS_DISPATCHER" ]; then
+    MESOS_CLUSTER_DISPATCHER=$MESOS_DISPATCHER
   fi
   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS
     --master $MESOS_CLUSTER_DISPATCHER --deploy-mode cluster
-    --conf spark.yarn.submit.waitAppCompletion=false"
+    --conf spark.yarn.submit.waitAppCompletion=false
+    --conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
+    --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
+    --conf spark.executor.instances=1
+  "
   JAR_FILE="$REMOTE_JOBSERVER_DIR/spark-job-server.jar"
-  CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"
-  LOGGING_OPTS="-Dlog4j.configuration=$REMOTE_JOBSERVER_DIR/log4j-cluster.properties"
+  # CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"
+  # LOGGING_OPTS="-Dlog4j.configuration=file:$appdir/log4j-cluster.properties"
 
 # use files in REMOTE_JOBSERVER_DIR
-elif [ $2 == "cluster" ]; then
+elif [ $DEPLOY_MODE == "cluster" ]; then
   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS
-    --master $1 --deploy-mode cluster
-    --conf spark.yarn.submit.waitAppCompletion=false"
+    --master $MASTER --deploy-mode cluster
+    --conf spark.yarn.submit.waitAppCompletion=false
+    --conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
+    --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
+    --conf spark.executor.instances=1
+    --conf spark.ui.port=8000
+    --conf spark.kubernetes.driver.label.spark-driver=ture
+  "
   JAR_FILE="$REMOTE_JOBSERVER_DIR/spark-job-server.jar"
-  CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"
-  LOGGING_OPTS="-Dlog4j.configuration=$REMOTE_JOBSERVER_DIR/log4j-cluster.properties"
+  # CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"
+  # LOGGING_OPTS="-Dlog4j.configuration=file:$appdir/log4j-cluster.properties"
 
 # client mode, use files from app dir
 else
   JAR_FILE="$appdir/spark-job-server.jar"
-  CONF_FILE="$conffile"
-  LOGGING_OPTS="-Dlog4j.configuration=file:$appdir/log4j-server.properties -DLOG_DIR=$5"
-  GC_OPTS="$GC_OPTS -Xloggc:$5/gc.out"
+  # CONF_FILE="$conffile"
+  # LOGGING_OPTS="-Dlog4j.configuration=file:$appdir/log4j-server.properties -DLOG_DIR=$CONTEXT_DIR"
+  GC_OPTS="$GC_OPTS -Xloggc:$CONTEXT_DIR/gc.out"
+fi
+
+if [ "$K8S_POD_NAME" != "NULL" ]; then
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.kubernetes.driver.pod.name=$K8S_POD_NAME"
 fi
 
 # set driver cores and memory option
-SPARK_DRIVER_OPTIONS="--driver-cores $7"
-if [ "$8" != "0" ]; then
-  SPARK_DRIVER_OPTIONS="$SPARK_DRIVER_OPTIONS --driver-memory $8"
-else
-  SPARK_DRIVER_OPTIONS="$SPARK_DRIVER_OPTIONS --driver-memory $JOBSERVER_MEMORY"
+if [ "$DRIVER_CORES" != "NULL" ]; then
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.kubernetes.driver.limit.cores=$DRIVER_CORES"
 fi
 
-if [ "${10}" != "NULL" ]; then
-  SPARK_DRIVER_OPTIONS="$SPARK_DRIVER_OPTIONS --conf spark.kubernetes.driver.pod.name=${10}"
+if [ "$DRIVER_MEMORY" != "NULL" ]; then
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.driver.memory=$DRIVER_MEMORY"
 fi
 
-if [ -n "${11}" ]; then
-  SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --proxy-user ${11}"
+# set executor cores and memory option
+if [ "$EXECUTOR_CORES" != "NULL" ]; then
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.kubernetes.executor.limit.cores=$EXECUTOR_CORES"
+fi
+
+if [ "$EXECUTOR_MEMORY" != "NULL" ]; then
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.executor.memory=$EXECUTOR_MEMORY"
+fi
+
+if [ "$EXECUTOR_INSTANCES" != "NULL" ]; then
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.executor.instances=$EXECUTOR_INSTANCES"
+fi
+
+if [ -n "$SPARK_PROXY_USER_PARAM" ]; then
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --proxy-user $SPARK_PROXY_USER_PARAM"
 fi
 
 if [ -n "$JOBSERVER_KEYTAB" ]; then
-  SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --keytab $JOBSERVER_KEYTAB"
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --keytab $JOBSERVER_KEYTAB"
 fi
 
-
 cmd='$SPARK_HOME/bin/spark-submit --class $MAIN $SPARK_DRIVER_OPTIONS
-      --conf "spark.executor.extraJavaOptions=$LOGGING_OPTS"
+      --conf "spark.executor.extraJavaOptions=$ALLUXIO_OPTS"
       $SPARK_SUBMIT_OPTIONS
-      --driver-java-options "$GC_OPTS $JAVA_OPTS $LOGGING_OPTS $CONFIG_OVERRIDES $SPARK_SUBMIT_JAVA_OPTIONS"
-      $JAR_FILE $3 $4 $6'
+      --driver-java-options "$GC_OPTS $JAVA_OPTS $CONFIG_OVERRIDES $SPARK_SUBMIT_JAVA_OPTIONS"
+      $JAR_FILE $CLUSTER_ENTRY_NODE $CONTEXT_ACTOR_NAME $JOBSERVER_PORT $JOBSERVER_HOST'
 
-eval $cmd 2>&1 > $5/spark-job-server.out
+echo "SPARK_DOCKER_IMAGE:" $SPARK_DOCKER_IMAGE
+echo "SPARK_HOME:" $SPARK_HOME
+echo "MAIN:" $MAIN
+echo "SPARK_DRIVER_OPTIONS:" $SPARK_DRIVER_OPTIONS
+# echo "LOGGING_OPTS:" $LOGGING_OPTS
+echo "ALLUXIO_OPTS:" $ALLUXIO_OPTS
+echo "SPARK_SUBMIT_OPTIONS:" $SPARK_SUBMIT_OPTIONS
+echo "GC_OPTS:" $GC_OPTS
+echo "JAVA_OPTS:" $JAVA_OPTS
+# echo "LOGGING_OPTS:" $LOGGING_OPTS
+echo "CONFIG_OVERRIDES:" $CONFIG_OVERRIDES
+echo "SPARK_SUBMIT_JAVA_OPTIONS:" $SPARK_SUBMIT_JAVA_OPTIONS
+echo "JAR_FILE:" $JAR_FILE
+echo "CLUSTER_ENTRY_NODE:" $CLUSTER_ENTRY_NODE
+echo "CONTEXT_ACTOR_NAME:" $CONTEXT_ACTOR_NAME
+echo "CONTEXT_DIR:" $CONTEXT_DIR
+echo "JOBSERVER_PORT:" $JOBSERVER_PORT
 
+echo "cmd:" $cmd
+
+eval $cmd 2>&1 > $CONTEXT_DIR/spark-job-server.out

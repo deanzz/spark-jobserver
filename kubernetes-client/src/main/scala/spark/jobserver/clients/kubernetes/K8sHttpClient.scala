@@ -53,9 +53,9 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
   }*/
 
   def podStatus(name: String, namespace: String = defaultNamespace): String = {
-    val url = s"/api/v1/namespaces/$namespace/pods/$name/status"
-    log.info(s"podStatus.uri = $url")
-    val future = pipeline(Get(url)).map(res => parsePodStatusResp(res.entity.asString))
+    val uri = s"/api/v1/namespaces/$namespace/pods/$name/status"
+    log.info(s"podStatus.uri = $uri")
+    val future = pipeline(Get(uri)).map(res => parsePodStatusResp(res.entity.asString))
     Try(Await.result(future, requestTimeout seconds)) match {
       case Success(res) => res
       case Failure(e) =>
@@ -66,14 +66,26 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
 
   def podLog(name: String, namespace: String = defaultNamespace,
              previous: Boolean = true, tailLines: Int = 200): String = {
-    val url =
+    val uri =
       s"/api/v1/namespaces/$namespace/pods/$name/log?previous=$previous&tailLines=$tailLines"
-    log.info(s"podLog.uri = $url")
-    val future = pipeline(Get(url)).map(res => res.entity.asString)
+    log.info(s"podLog.uri = $uri")
+    val future = pipeline(Get(uri)).map(res => res.entity.asString)
     Try(Await.result(future, requestTimeout seconds)) match {
       case Success(res) => res
       case Failure(e) =>
         log.error(s"podPreviousLog got error, ${e.getMessage}", e)
+        throw e
+    }
+  }
+
+  def deletePod(name: String, namespace: String = defaultNamespace): Boolean = {
+    val uri = s"/api/v1/namespaces/$namespace/pods/$name?gracePeriodSeconds=0"
+    log.info(s"deletePod.uri = $uri")
+    val future = pipeline(Delete(uri)).map(res => parsePodStatusResp(res.entity.asString))
+    Try(Await.result(future, requestTimeout seconds)) match {
+      case Success(res) => true
+      case Failure(e) =>
+        log.error(s"deletePod got error, ${e.getMessage}", e)
         throw e
     }
   }
