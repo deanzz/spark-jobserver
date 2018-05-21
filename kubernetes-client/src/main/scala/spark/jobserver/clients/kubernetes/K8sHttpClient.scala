@@ -35,22 +35,28 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
     context
   }
   private implicit val timeout = akka.util.Timeout(requestTimeout, TimeUnit.SECONDS)
-  private val connection = {
+  /*private var connection = {
     Await.result((IO(Http) ? HostConnectorSetup(host, port = port, sslEncryption = true)).map {
       case HostConnectorInfo(hostConnector, _) => hostConnector }, requestTimeout seconds)
   }
 
   def pipeline: HttpRequest => Future[HttpResponse] = {
-    sendReceive(connection)
-  }
+    Try(sendReceive(connection)).getOrElse{
+      connection = {
+        Await.result((IO(Http) ? HostConnectorSetup(host, port = port, sslEncryption = true)).map {
+          case HostConnectorInfo(hostConnector, _) => hostConnector }, requestTimeout seconds)
+      }
+      sendReceive(connection)
+    }
+  }*/
 
-  /*def pipeline: HttpRequest => Future[HttpResponse] = {
+  def pipeline: HttpRequest => Future[HttpResponse] = {
     val connection = {
       Await.result((IO(Http) ? HostConnectorSetup(host, port = port, sslEncryption = true)).map {
         case HostConnectorInfo(hostConnector, _) => hostConnector }, requestTimeout seconds)
     }
     sendReceive(connection)
-  }*/
+  }
 
   def podStatus(name: String, namespace: String = defaultNamespace): String = {
     val uri = s"/api/v1/namespaces/$namespace/pods/$name/status"
@@ -65,7 +71,7 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
   }
 
   def podLog(name: String, namespace: String = defaultNamespace,
-             previous: Boolean = true, tailLines: Int = 200): String = {
+             previous: Boolean = false, tailLines: Int = 200): String = {
     val uri =
       s"/api/v1/namespaces/$namespace/pods/$name/log?previous=$previous&tailLines=$tailLines"
     log.info(s"podLog.uri = $uri")
@@ -94,7 +100,7 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
     log.info(s"resp:\n$resp")
     val map = JsonUtils.mapFromJson(resp)
     val status = map("status")
-    if (status.asInstanceOf[String] == "Failure") {
+    if (Try(status.asInstanceOf[String]).getOrElse("") == "Failure") {
       map("reason").asInstanceOf[String]
     } else {
       status.asInstanceOf[Map[String, Any]]("phase").asInstanceOf[String]

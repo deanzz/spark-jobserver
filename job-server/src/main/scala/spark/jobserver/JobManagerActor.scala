@@ -248,7 +248,7 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
       logger.info("Member detected as unreachable: {}", member.address)
       unreachableMembers += member.address.toString
       logger.info(s"unreachableMembers:\n${unreachableMembers.mkString("\n")}")
-      if (unreachableMembers.size >= 3) {
+      if (unreachableMembers.nonEmpty) {
         self ! PoisonPill
       }
 
