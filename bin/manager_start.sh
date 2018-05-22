@@ -54,8 +54,6 @@ if [ $DEPLOY_MODE = "cluster" -a -z "$REMOTE_JOBSERVER_DIR" ]; then
     --conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
     --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
     --conf spark.kubernetes.driver.label.spark-driver=ture
-    --conf spark.dynamicAllocation.enabled=true
-    --conf spark.shuffle.service.enabled=true
   "
 #--conf spark.kubernetes.driver.pod.name=spark-driver
 #--conf spark.executor.instances=1
@@ -74,8 +72,6 @@ elif [ $DEPLOY_MODE == "cluster" -a "$MESOS_CLUSTER_DISPATCHER" ]; then
     --conf spark.yarn.submit.waitAppCompletion=false
     --conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
     --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
-    --conf spark.dynamicAllocation.enabled=true
-    --conf spark.shuffle.service.enabled=true
   "
   JAR_FILE="$REMOTE_JOBSERVER_DIR/spark-job-server.jar"
   # CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"
@@ -90,8 +86,6 @@ elif [ $DEPLOY_MODE == "cluster" ]; then
     --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
     --conf spark.ui.port=8000
     --conf spark.kubernetes.driver.label.spark-driver=ture
-    --conf spark.dynamicAllocation.enabled=true
-    --conf spark.shuffle.service.enabled=true
   "
   JAR_FILE="$REMOTE_JOBSERVER_DIR/spark-job-server.jar"
   # CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"

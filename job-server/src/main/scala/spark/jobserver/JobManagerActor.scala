@@ -151,8 +151,8 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
       |"context":"%s","jobId":"%s","result":"%s","duration":"%s"}
     """.stripMargin
   private val cluster = Cluster(context.system)
-  private val clusterAddress = clusterAddressOpt.flatMap(s => Some(AddressFromURIString.parse(s)))
-  private val unreachableMembers = mutable.Set.empty[String]
+  //private val clusterAddress = clusterAddressOpt.flatMap(s => Some(AddressFromURIString.parse(s)))
+  //private val unreachableMembers = mutable.Set.empty[String]
   private val AbstractPBJobExceptionKey = "AbstractPBJob_"
 
 
@@ -246,9 +246,10 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
 
     case UnreachableMember(member) =>
       logger.info("Member detected as unreachable: {}", member.address)
-      unreachableMembers += member.address.toString
-      logger.info(s"unreachableMembers:\n${unreachableMembers.mkString("\n")}")
-      if (unreachableMembers.nonEmpty) {
+     /* unreachableMembers += member.address.toString
+      logger.info(s"unreachableMembers:\n${unreachableMembers.mkString("\n")}")*/
+      if (member.hasRole("supervisor")) {
+        logger.info("context kill self: {}", self)
         self ! PoisonPill
       }
 
