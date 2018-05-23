@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import aco.jobserver.common.JobServerMessage._
 import akka.actor.SupervisorStrategy.Escalate
-import akka.actor.{ActorRef, AddressFromURIString, OneForOneStrategy, PoisonPill, Props}
+import akka.actor.{ActorRef, OneForOneStrategy, PoisonPill, Props}
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, UnreachableMember}
 import com.typesafe.config.{Config, ConfigFactory}
@@ -25,8 +25,6 @@ import spark.jobserver.util.{ContextURLClassLoader, SparkJobUtils}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 import spark.jobserver.common.akka.InstrumentedActor
-
-import scala.collection.mutable
 
 object JobManagerActor {
 
@@ -112,6 +110,7 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   import scala.concurrent.duration._
   import collection.JavaConverters._
 
+  implicit val system = context.system
   val config = context.system.settings.config
   private val maxRunningJobs = SparkJobUtils.getMaxRunningJobs(config)
   val executionContext = ExecutionContext.fromExecutorService(newFixedThreadPool(maxRunningJobs))
@@ -152,9 +151,13 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
     """.stripMargin
   private val cluster = Cluster(context.system)
   //private val clusterAddress = clusterAddressOpt.flatMap(s => Some(AddressFromURIString.parse(s)))
-  //private val unreachableMembers = mutable.Set.empty[String]
   private val AbstractPBJobExceptionKey = "AbstractPBJob_"
-
+ /* private val enableK8sCheck = Try(config.getBoolean("kubernetes.check.enable")).getOrElse(false)
+  private val k8sClient = new K8sHttpClient(config)
+  private val acoMonitor: Option[ActorRef] = Some(context.system.actorOf(ClusterSingletonProxy.props(
+    singletonManagerPath = "/user/jobserver-monitor",
+    settings = ClusterSingletonProxySettings(context.system).withRole("scheduler")),
+    name = "jobserver-monitor-proxy"))*/
 
   private def getEnvironment(_jobId: String): JobEnvironment = {
     val _contextCfg = contextConfig
@@ -172,8 +175,9 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   }
 
   override def preStart(): Unit = {
+    context.watch(self)
     cluster.subscribe(self, initialStateMode = InitialStateAsEvents,
-      classOf[UnreachableMember] /*, classOf[MemberEvent]*/)
+      classOf[UnreachableMember])
     logger.info("JobManagerActor preStart")
   }
 
@@ -182,8 +186,6 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
     cluster.unsubscribe(self)
     Option(jobContext).foreach(_.stop())
   }
-
-  override def preRestart(reason: Throwable, message: Option[Any]): Unit = super.preRestart(reason, message)
 
   override val supervisorStrategy: OneForOneStrategy =
     OneForOneStrategy(maxNrOfRetries = 10, withinTimeRange = 1 minute) {
@@ -197,57 +199,32 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   private def sparkListener = {
     new SparkListener() {
       override def onApplicationEnd(event: SparkListenerApplicationEnd) {
-        logger.info("Got Spark Application end event, stopping job manager.")
+        logger.info(s"Got Spark Application end event, " +
+          s"context [$contextName] is killed due to exception.")
+        /*if (enableK8sCheck) {
+          Try(k8sClient.podLog(contextName)) match {
+            case Success(log) =>
+              logger.error(s"error log from k8s:\n$log")
+              acoMonitor.foreach(m => m ! ContextTerminated(contextName, log))
+            case Failure(e) =>
+              val errMsg = e match {
+                case _: TimeoutException => "Connect kubernetes API timeout!!"
+                case _ => s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
+              }
+              acoMonitor.foreach(m => m ! ContextTerminated(contextName, errMsg))
+          }
+        } else {
+          acoMonitor.foreach(m => m ! ContextTerminated(contextName,
+            "No error log when kubernetes.check.enable is false"))
+        }*/
         self ! PoisonPill
       }
     }
   }
 
   def wrappedReceive: Receive = {
-    /*case MemberUp(member) =>
-      logger.info(s"Member is up: roles ${member.roles}, address ${member.address}")
-      if (member.hasRole("manager") && member.address == cluster.selfAddress) {
-        logger.info(s"reset rejoin parameters")
-        synchronized{
-          unreachableMembers.clear()
-          rejoinTimes = 5
-          rejoining = false
-        }
-      }
-
     case UnreachableMember(member) =>
       logger.info("Member detected as unreachable: {}", member.address)
-      synchronized(unreachableMembers += member.address.toString)
-      logger.info(s"unreachableMembers:\n${unreachableMembers.mkString("\n")}")
-      if (rejoinTimes <= 0) {
-        self ! PoisonPill
-      } else {
-        if (!rejoining) {
-          cluster.leave(cluster.selfAddress)
-          Thread.sleep(5000)
-          synchronized(rejoining = true)
-          rejoin()
-        }
-      }
-
-      def rejoin(): Unit = {
-        if (unreachableMembers.nonEmpty && rejoinTimes > 0) {
-          logger.info(s"try to join cluster [$clusterAddress] again, remaining $rejoinTimes times")
-          clusterAddress.foreach{
-            address =>
-              logger.info(s"rejoining the cluster [$address]")
-              cluster.join(address)
-          }
-          synchronized(rejoinTimes = rejoinTimes - 1)
-          Thread.sleep(10000)
-          rejoin()
-        }
-      }*/
-
-    case UnreachableMember(member) =>
-      logger.info("Member detected as unreachable: {}", member.address)
-     /* unreachableMembers += member.address.toString
-      logger.info(s"unreachableMembers:\n${unreachableMembers.mkString("\n")}")*/
       if (member.hasRole("supervisor")) {
         logger.info("context kill self: {}", self)
         self ! PoisonPill
