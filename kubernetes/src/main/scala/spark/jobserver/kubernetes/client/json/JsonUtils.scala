@@ -1,4 +1,4 @@
-package spark.jobserver.clients.kubernetes.json
+package spark.jobserver.kubernetes.client.json
 
 import spray.json.DefaultJsonProtocol._
 import spray.json._

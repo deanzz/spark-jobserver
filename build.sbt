@@ -12,8 +12,8 @@ lazy val akkaApp = Project(id = "akka-app", base = file("akka-app"))
   .settings(publishSettings)
   .disablePlugins(SbtScalariform)
 
-//kubernetes-client
-lazy val kubernetesClient = Project(id = "kubernetes-client", base = file("kubernetes-client"))
+//kubernetes
+lazy val kubernetesClient = Project(id = "kubernetes", base = file("kubernetes"))
   .settings(commonSettings)
   .settings(libraryDependencies ++= coreTestDeps ++ akkaDeps)
   .settings(publishSettings)

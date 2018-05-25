@@ -44,7 +44,8 @@ K8S_POD_NAME=${11}
 EXECUTOR_CORES=${12}
 EXECUTOR_MEMORY=${13}
 EXECUTOR_INSTANCES=${14}
-SPARK_PROXY_USER_PARAM=${15}
+NODE_SELECTOR=${15}
+SPARK_PROXY_USER_PARAM=${16}
 
 # copy files via spark-submit and read them from current (container) dir
 if [ $DEPLOY_MODE = "cluster" -a -z "$REMOTE_JOBSERVER_DIR" ]; then
@@ -123,6 +124,10 @@ fi
 
 if [ "$EXECUTOR_INSTANCES" != "NULL" ]; then
    SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.executor.instances=$EXECUTOR_INSTANCES"
+fi
+
+if [ "$NODE_SELECTOR" != "NULL" ]; then
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.kubernetes.node.selector.nodename=$NODE_SELECTOR"
 fi
 
 if [ -n "$SPARK_PROXY_USER_PARAM" ]; then

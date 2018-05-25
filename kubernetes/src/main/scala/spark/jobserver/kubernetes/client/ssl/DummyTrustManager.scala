@@ -1,4 +1,4 @@
-package spark.jobserver.clients.kubernetes.ssl
+package spark.jobserver.kubernetes.client.ssl
 
 import java.security.cert.X509Certificate
 import javax.net.ssl.X509TrustManager

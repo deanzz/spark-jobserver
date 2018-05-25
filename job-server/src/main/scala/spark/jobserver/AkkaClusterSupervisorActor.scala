@@ -24,8 +24,10 @@ import akka.pattern.gracefulStop
 import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
 import spark.jobserver.JobManagerActor.{GetSparkWebUIUrl, NoSparkWebUI, SparkContextDead, SparkWebUIUrl}
-import spark.jobserver.clients.kubernetes.K8sHttpClient
 import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
+import spark.jobserver.kubernetes.allocator.ResourceAllocator
+import spark.jobserver.kubernetes.allocator.ResourceAllocator.{AllocationRequest, Resource}
+import spark.jobserver.kubernetes.client.K8sHttpClient
 
 /**
   * The AkkaClusterSupervisorActor launches Spark Contexts as external processes
@@ -62,6 +64,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   private val managerStartCommand = config.getString("deploy.manager-start-cmd")
   private val enableK8sCheck = Try(config.getBoolean("kubernetes.check.enable")).getOrElse(false)
   private val k8sClient = new K8sHttpClient(config)
+  private val resourceAllocator = new ResourceAllocator(config)
 
   import context.dispatcher
 
@@ -159,15 +162,54 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       val requestWorker = sender()
 
       def create(): Unit = {
-        val paramMap = parameters2Map(parameters)
-        val contextConfig = ConfigFactory.parseMap(paramMap.asJava)
-        self ! AddContext(name, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
+        Try {
+          val paramMap = parameters2Map(parameters)
+          val contextConfig = ConfigFactory.parseMap(paramMap.asJava)
+          val mergedContextConfig = if (enableK8sCheck) {
+            // get cpu/memory per executor, executor instances and nodeSelector
+            val driverCpu = Try(contextConfig.getDouble("driver-cores")).getOrElse(1d)
+            val driverMemory = Try(contextConfig.getString("driver-memory"))
+              .getOrElse("1024m").filter(c => c >= '0' && c <= '9').toInt
+            val totalExecutorCpu = Try(contextConfig.getDouble("num-cpu-cores")).getOrElse(1d)
+            val totalExecutorMemory = Try(contextConfig.getString("memory-per-node"))
+              .getOrElse("1024m").filter(c => c >= '0' && c <= '9').toInt
+            val allocationRequest = AllocationRequest(Resource(driverCpu, driverMemory),
+              Resource(totalExecutorCpu, totalExecutorMemory))
+            val allocationResponse = resourceAllocator.allocate(allocationRequest)
+            logger.info(
+              s"""
+              num-cpu-cores -> ${allocationResponse.executorResource.cpu}
+              memory-per-node -> ${allocationResponse.executorResource.memory}m
+              executor-instances -> ${allocationResponse.executorInstances.toString}
+              node-selector -> ${allocationResponse.nodeName}""")
+            // write new config
+            ConfigFactory.parseMap(
+              Map(
+                "num-cpu-cores" -> allocationResponse.executorResource.cpu.toString,
+                "memory-per-node" -> s"${allocationResponse.executorResource.memory}m",
+                "executor-instances" -> allocationResponse.executorInstances.toString,
+                "node-selector" -> allocationResponse.nodeName).asJava
+            ).withFallback(contextConfig)
+          } else {
+            contextConfig
+          }
+          self ! AddContext(name, mergedContextConfig, Some(requestWorker), Some(operatorId), Some(operation))
+        } match {
+          case Success(_) =>
+          case Failure(e) =>
+            logger.error(s"Resource allocation error, ${e.getMessage}", e)
+            val err = s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
+            val failed = AddContextFailedWrapper(
+              name, s"Resource allocation error, $err", operatorId, operation)
+            requestWorker ! failed
+            acoMonitor.foreach(m => m ! failed)
+        }
       }
 
       if (enableK8sCheck) {
         // using lower-case context name ONLY under k8s API
         val lowerName = name.toLowerCase
-        Try(k8sClient.podStatus(lowerName)) match {
+        Try(k8sClient.getPodStatus(lowerName)) match {
           case Success(res) =>
             logger.info(s"The status of context [$lowerName] in kubernetes is $res")
             res match {
@@ -190,7 +232,6 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
                 //"Failed" | "Unknown" | "Pending" | "Succeeded"
                 k8sClient.deletePod(lowerName)
                 create()
-
             }
           case Failure(e) =>
             logger.error(s"AddContextWrapper error, ${e.getMessage}", e)
@@ -214,6 +255,8 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       }
 
     case AddContext(name, contextConfig, workerActor, operatorId, operation) =>
+      // using lower-case context name ONLY under k8s API
+      val lowerName = name.toLowerCase
       val originator = sender()
       val mergedConfig = contextConfig.withFallback(defaultContextConfig)
       // TODO(velvia): This check is not atomic because contexts is only populated
@@ -235,6 +278,10 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
               operatorId.get, "SUCCESS", operation.get)
             workerActor.get ! succeed
             acoMonitor.foreach(m => m ! succeed)
+            // reduce node resource
+            // pod is not ready, wait a moment
+            //Thread.sleep(3000)
+            resourceAllocator.correctNodeResource(lowerName)
           }
         } { err =>
           originator ! ContextInitError(err)
@@ -297,6 +344,11 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
           val stoppedCtx = gracefulStop(contexts(name)._1, contextDeletionTimeout seconds)
           Await.result(stoppedCtx, contextDeletionTimeout + 1 seconds)
           sender ! ContextStopped
+          if (enableK8sCheck) {
+            val lowerName = name.toLowerCase
+            // increase node resource
+            resourceAllocator.recycleNodeResource(lowerName)
+          }
         }
         catch {
           case err: Exception => sender ! ContextStopError(err)
@@ -323,6 +375,10 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
               }
               acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg))
           }
+
+          val lowerName = name.toLowerCase
+          // increase node resource
+          resourceAllocator.recycleNodeResource(lowerName)
         } else {
           acoMonitor.foreach(m => m ! ContextTerminated(name,
             "No error log when kubernetes.check.enable is false"))
@@ -431,7 +487,13 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     }
 
     if (isKubernetesMode) {
-      managerArgs = managerArgs :+ Try(contextConfig.getString("executor-instances")).getOrElse("2")
+      managerArgs = managerArgs :+ contextConfig.getString("executor-instances")
+    } else {
+      managerArgs = managerArgs :+ "NULL"
+    }
+
+    if (isKubernetesMode) {
+      managerArgs = managerArgs :+ contextConfig.getString("node-selector")
     } else {
       managerArgs = managerArgs :+ "NULL"
     }
