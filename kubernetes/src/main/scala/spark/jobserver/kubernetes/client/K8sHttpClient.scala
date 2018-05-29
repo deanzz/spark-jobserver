@@ -38,20 +38,6 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
   }
 
   private implicit val timeout = akka.util.Timeout(requestTimeout, TimeUnit.SECONDS)
-  /*private var connection = {
-    Await.result((IO(Http) ? HostConnectorSetup(host, port = port, sslEncryption = true)).map {
-      case HostConnectorInfo(hostConnector, _) => hostConnector }, requestTimeout seconds)
-  }
-
-  def pipeline: HttpRequest => Future[HttpResponse] = {
-    Try(sendReceive(connection)).getOrElse{
-      connection = {
-        Await.result((IO(Http) ? HostConnectorSetup(host, port = port, sslEncryption = true)).map {
-          case HostConnectorInfo(hostConnector, _) => hostConnector }, requestTimeout seconds)
-      }
-      sendReceive(connection)
-    }
-  }*/
 
   def pipeline: HttpRequest => Future[HttpResponse] = {
     val connection = {
@@ -108,7 +94,7 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
     }
   }
 
-  def nodeStatus(name: String): (Double, Int) = {
+  def nodeStatus(name: String): (Int, Int) = {
     val uri = s"/api/v1/nodes/$name/status"
     log.info(s"nodeStatus.uri = $uri")
     val future = pipeline(Get(uri)).map(res => parseNodeStatusResp(res.entity.asString))
@@ -157,10 +143,11 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
         val resources = containers.head("resources").asInstanceOf[Map[String, Any]]
         val limits = resources("limits").asInstanceOf[Map[String, Any]]
         val cpuStr = limits("cpu").asInstanceOf[String]
-        val cpuNum = cpuStr.filter(c => c >= '0' && c <= '9').toDouble
+        val cpuNum = cpuStr.filter(c => c >= '0' && c <= '9').toInt
         val cpu =
           if (cpuStr.endsWith("m")) {
-            cpuNum / 1000
+            val num = cpuNum / 1000
+            if (num < 1) 1 else num
           } else {
             cpuNum
           }
@@ -181,10 +168,11 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
     val resources = containers.head("resources").asInstanceOf[Map[String, Any]]
     val limits = resources("limits").asInstanceOf[Map[String, Any]]
     val cpuStr = limits("cpu").asInstanceOf[String]
-    val cpuNum = cpuStr.filter(c => c >= '0' && c <= '9').toDouble
+    val cpuNum = cpuStr.filter(c => c >= '0' && c <= '9').toInt
     val cpu =
       if (cpuStr.endsWith("m")) {
-        cpuNum / 1000
+        val num = cpuNum / 1000
+        if (num < 1) 1 else num
       } else {
         cpuNum
       }
@@ -204,7 +192,7 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
     }
   }
 
-  private def parseNodeStatusResp(resp: String): (Double, Int) = {
+  private def parseNodeStatusResp(resp: String): (Int, Int) = {
     log.info(s"resp:\n$resp")
     val map = JsonUtils.mapFromJson(resp)
     if (resp.contains("\"status\"") && resp.contains("\"allocatable\"")) {
@@ -212,10 +200,11 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
       val allocatableMap = status.asInstanceOf[Map[String, Any]]("allocatable").asInstanceOf[Map[String, Any]]
 
       val cpuStr = allocatableMap("cpu").asInstanceOf[String]
-      val cpuNum = cpuStr.filter(c => c >= '0' && c <= '9').toDouble
+      val cpuNum = cpuStr.filter(c => c >= '0' && c <= '9').toInt
       val cpu =
         if (cpuStr.endsWith("m")) {
-          cpuNum / 1000
+          val num = cpuNum / 1000
+          if (num < 1) 1 else num
         } else {
           cpuNum
         }

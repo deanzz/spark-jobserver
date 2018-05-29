@@ -41,11 +41,8 @@ DRIVER_CORES=$8
 DRIVER_MEMORY=$9
 MESOS_DISPATCHER=${10}
 K8S_POD_NAME=${11}
-EXECUTOR_CORES=${12}
-EXECUTOR_MEMORY=${13}
-EXECUTOR_INSTANCES=${14}
-NODE_SELECTOR=${15}
-SPARK_PROXY_USER_PARAM=${16}
+K8S_NODE_SELECTOR=${12}
+SPARK_PROXY_USER_PARAM=${13}
 
 # copy files via spark-submit and read them from current (container) dir
 if [ $DEPLOY_MODE = "cluster" -a -z "$REMOTE_JOBSERVER_DIR" ]; then
@@ -106,6 +103,9 @@ fi
 
 # set driver cores and memory option
 if [ "$DRIVER_CORES" != "NULL" ]; then
+   # request cores
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.driver.cores=$DRIVER_CORES"
+   # limit cores
    SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.kubernetes.driver.limit.cores=$DRIVER_CORES"
 fi
 
@@ -113,21 +113,8 @@ if [ "$DRIVER_MEMORY" != "NULL" ]; then
    SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.driver.memory=$DRIVER_MEMORY"
 fi
 
-# set executor cores and memory option
-if [ "$EXECUTOR_CORES" != "NULL" ]; then
-   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.kubernetes.executor.limit.cores=$EXECUTOR_CORES"
-fi
-
-if [ "$EXECUTOR_MEMORY" != "NULL" ]; then
-   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.executor.memory=$EXECUTOR_MEMORY"
-fi
-
-if [ "$EXECUTOR_INSTANCES" != "NULL" ]; then
-   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.executor.instances=$EXECUTOR_INSTANCES"
-fi
-
-if [ "$NODE_SELECTOR" != "NULL" ]; then
-   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.kubernetes.node.selector.nodename=$NODE_SELECTOR"
+if [ "$K8S_NODE_SELECTOR" != "NULL" ]; then
+   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS --conf spark.kubernetes.node.selector.nodename=$K8S_NODE_SELECTOR"
 fi
 
 if [ -n "$SPARK_PROXY_USER_PARAM" ]; then

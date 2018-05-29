@@ -8,17 +8,18 @@ import org.apache.spark.SparkConf
 import scala.util.Try
 
 /**
- * Holds a few functions common to Job Server SparkJob's and SparkContext's
- */
+  * Holds a few functions common to Job Server SparkJob's and SparkContext's
+  */
 object SparkJobUtils {
+
   import collection.JavaConverters._
 
   val NameContextDelimiter = "~"
 
   /**
-   * User impersonation for an already Kerberos authenticated user is supported via the
-   * `spark.proxy.user` query param
-   */
+    * User impersonation for an already Kerberos authenticated user is supported via the
+    * `spark.proxy.user` query param
+    */
   val SPARK_PROXY_USER_PARAM = "spark.proxy.user"
 
   private val regRexPart2 = "([^" + SparkJobUtils.NameContextDelimiter + "]+.*)"
@@ -28,7 +29,7 @@ object SparkJobUtils {
     * if the user name contains the delimiter as well, then it doubles it so that we can be sure
     * that our prefix is unique
     */
-  def userNamePrefix(userName: String) : String = {
+  def userNamePrefix(userName: String): String = {
     userName.replaceAll(NameContextDelimiter,
       NameContextDelimiter + NameContextDelimiter) +
       NameContextDelimiter
@@ -49,16 +50,16 @@ object SparkJobUtils {
   }
 
   /**
-   * Creates a SparkConf for initializing a SparkContext based on various configs.
-   * Note that anything in contextConfig with keys beginning with spark. get
-   * put directly in the SparkConf.
-   *
-   * @param config the overall Job Server configuration (Typesafe Config)
-   * @param contextConfig the Typesafe Config specific to initializing this context
-   *                      (typically based on particular context/job)
-   * @param contextName the context name
-   * @return a SparkConf with everything properly configured
-   */
+    * Creates a SparkConf for initializing a SparkContext based on various configs.
+    * Note that anything in contextConfig with keys beginning with spark. get
+    * put directly in the SparkConf.
+    *
+    * @param config        the overall Job Server configuration (Typesafe Config)
+    * @param contextConfig the Typesafe Config specific to initializing this context
+    *                      (typically based on particular context/job)
+    * @param contextName   the context name
+    * @return a SparkConf with everything properly configured
+    */
   def configToSparkConf(config: Config, contextConfig: Config,
                         contextName: String): SparkConf = {
 
@@ -69,12 +70,35 @@ object SparkJobUtils {
       .setMaster(sparkMaster)
       .setAppName(contextName)
 
-    for (cores <- Try(contextConfig.getInt("num-cpu-cores"))) {
-      conf.set("spark.cores.max", cores.toString)
-    }
-    // Should be a -Xmx style string eg "512m", "1G"
-    for (nodeMemStr <- Try(contextConfig.getString("memory-per-node"))) {
-      conf.set("spark.executor.memory", nodeMemStr)
+    val isK8s = sparkMaster.startsWith("k8s")
+
+    if (isK8s) {
+      conf.set("spark.kubernetes.executor.podNamePrefix", contextName.toLowerCase)
+
+      val executorInstances = Try(contextConfig.getInt("executor-instances")).getOrElse(2)
+      conf.set("spark.executor.instances", executorInstances.toString)
+
+      for (cores <- Try(contextConfig.getInt("num-cpu-cores"))) {
+        // request cores
+        conf.set("spark.executor.cores", cores.toString)
+        // limit cores
+        conf.set("spark.kubernetes.executor.limit.cores", cores.toString)
+        // for setting RDD default partition num under DataSourceReader
+        conf.set("spark.cores.max", (cores * executorInstances).toString)
+      }
+
+      for (memory <- Try(contextConfig.getString("memory-per-node"))) {
+        conf.set("spark.executor.memory", memory)
+      }
+    } else {
+      for (cores <- Try(contextConfig.getInt("num-cpu-cores"))) {
+        conf.set("spark.cores.max", cores.toString)
+      }
+
+      // Should be a -Xmx style string eg "512m", "1G"
+      for (nodeMemStr <- Try(contextConfig.getString("memory-per-node"))) {
+        conf.set("spark.executor.memory", nodeMemStr)
+      }
     }
 
     Try(config.getString("spark.home")).foreach { home => conf.setSparkHome(home) }
@@ -96,9 +120,9 @@ object SparkJobUtils {
     // This is useful for setting configurations for hadoop connectors such as
     // elasticsearch, cassandra, etc.
     for (e <- Try(contextConfig.getConfig("passthrough"))) {
-         e.entrySet().asScala.map { s =>
-            conf.set(s.getKey, s.getValue.unwrapped.toString)
-         }
+      e.entrySet().asScala.map { s =>
+        conf.set(s.getKey, s.getValue.unwrapped.toString)
+      }
     }
 
     conf
@@ -116,21 +140,21 @@ object SparkJobUtils {
   }
 
   /**
-   * Returns the maximum number of jobs that can run at the same time
-   */
+    * Returns the maximum number of jobs that can run at the same time
+    */
   def getMaxRunningJobs(config: Config): Int = {
     val cpuCores = Runtime.getRuntime.availableProcessors
     Try(config.getInt("spark.jobserver.max-jobs-per-context")).getOrElse(cpuCores)
   }
 
-  private def getContextTimeout(config: Config, yarn : String, standalone : String): Int = {
+  private def getContextTimeout(config: Config, yarn: String, standalone: String): Int = {
     config.getString("spark.master") match {
       case "yarn" =>
         Try(config.getDuration(yarn,
-              TimeUnit.MILLISECONDS).toInt / 1000).getOrElse(40)
+          TimeUnit.MILLISECONDS).toInt / 1000).getOrElse(40)
       case _ =>
         Try(config.getDuration(standalone,
-              TimeUnit.MILLISECONDS).toInt / 1000).getOrElse(15)
+          TimeUnit.MILLISECONDS).toInt / 1000).getOrElse(15)
     }
   }
 
@@ -139,8 +163,8 @@ object SparkJobUtils {
     */
   def getContextCreationTimeout(config: Config): Int = {
     getContextTimeout(config, "spark.jobserver.yarn-context-creation-timeout",
-        "spark.jobserver.context-creation-timeout")
-    }
+      "spark.jobserver.context-creation-timeout")
+  }
 
   /**
     * According "spark.master", returns the timeout of delete sparkContext

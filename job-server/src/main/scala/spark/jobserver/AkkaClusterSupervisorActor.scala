@@ -167,10 +167,10 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
           val contextConfig = ConfigFactory.parseMap(paramMap.asJava)
           val mergedContextConfig = if (enableK8sCheck) {
             // get cpu/memory per executor, executor instances and nodeSelector
-            val driverCpu = Try(contextConfig.getDouble("driver-cores")).getOrElse(1d)
+            val driverCpu = Try(contextConfig.getInt("driver-cores")).getOrElse(1)
             val driverMemory = Try(contextConfig.getString("driver-memory"))
               .getOrElse("1024m").filter(c => c >= '0' && c <= '9').toInt
-            val totalExecutorCpu = Try(contextConfig.getDouble("num-cpu-cores")).getOrElse(1d)
+            val totalExecutorCpu = Try(contextConfig.getInt("num-cpu-cores")).getOrElse(1)
             val totalExecutorMemory = Try(contextConfig.getString("memory-per-node"))
               .getOrElse("1024m").filter(c => c >= '0' && c <= '9').toInt
             val allocationRequest = AllocationRequest(Resource(driverCpu, driverMemory),
@@ -433,9 +433,9 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     val isKubernetesMode = master.trim.startsWith("k8s")
 
     // Create a temporary dir, preferably in the LOG_DIR
-    val encodedContextName = java.net.URLEncoder.encode(name, "UTF-8")
+    //val encodedContextName = java.net.URLEncoder.encode(name, "UTF-8")
     val contextDir = Option(System.getProperty("LOG_DIR")).map { logDir =>
-      Files.createTempDirectory(Paths.get(logDir), s"jobserver-$encodedContextName")
+      Files.createTempDirectory(Paths.get(logDir), s"jobserver-$name")
     }.getOrElse(Files.createTempDirectory("jobserver"))
     logger.info("Created working directory {} for context {}", contextDir: Any, name)
 
@@ -469,25 +469,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
     if (isKubernetesMode) {
       // using lower-case context name ONLY under k8s API
-      managerArgs = managerArgs :+ encodedContextName.toLowerCase
-    } else {
-      managerArgs = managerArgs :+ "NULL"
-    }
-
-    if (isKubernetesMode) {
-      managerArgs = managerArgs :+ contextConfig.getString("num-cpu-cores")
-    } else {
-      managerArgs = managerArgs :+ "NULL"
-    }
-
-    if (isKubernetesMode) {
-      managerArgs = managerArgs :+ contextConfig.getString("memory-per-node")
-    } else {
-      managerArgs = managerArgs :+ "NULL"
-    }
-
-    if (isKubernetesMode) {
-      managerArgs = managerArgs :+ contextConfig.getString("executor-instances")
+      managerArgs = managerArgs :+ name.toLowerCase
     } else {
       managerArgs = managerArgs :+ "NULL"
     }

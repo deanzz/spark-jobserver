@@ -246,6 +246,12 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
           }
           factory = getContextFactory()
           jobContext = factory.makeContext(config, contextConfig, contextName)
+
+          logger.info("All SparkConf:")
+          jobContext.sparkContext.getConf.getAll.foreach{
+            case (k, v) => logger.info(s"$k: $v")
+          }
+
           jobContext.sparkContext.addSparkListener(sparkListener)
           sparkEnv = SparkEnv.get
           jobCache = new JobCacheImpl(jobCacheSize, daoActor, jobContext.sparkContext, jarLoader)

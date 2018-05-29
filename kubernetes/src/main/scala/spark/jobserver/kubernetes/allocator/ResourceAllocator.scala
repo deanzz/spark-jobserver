@@ -7,6 +7,7 @@ import spark.jobserver.kubernetes.allocator.ResourceAllocator._
 import spark.jobserver.kubernetes.client.K8sHttpClient
 
 import scala.collection.mutable
+import scala.util.Try
 
 class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
 
@@ -20,7 +21,8 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
   private val SPARK_ROLE = "spark-role"
   //private val DRIVER = "driver"
   private val EXECUTOR = "executor"
-  private val DEFAULT_EXECUTOR_INSTANCES = 4
+  private val DEFAULT_EXECUTOR_INSTANCES =
+    Try(config.getInt("kubernetes.context.executor.instances.default")).getOrElse(2)
   private val MIN_EXECUTOR_CPU = 1
   private val MIN_EXECUTOR_MEMORY = 1024
   private val DEFAULT_MEMORY_OVERHEAD = 384
@@ -45,7 +47,7 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
       val (node, maxRemainingResource) =
         nodeRemainingResourceMap.maxBy {
           case (_, Resource(cpu, memory)) =>
-            cpu * 100000000 + memory
+            cpu * 1000000000L + memory
         }
 
       log.info(s"node $node, requestCpu = $totalReqCpu, requestMemory = $totalExecutorReqMemory, " +
@@ -72,7 +74,7 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
       val podResourceSeq = podResourceMap.getOrElse(contextName, Seq.empty[PodResource])
       val (ctxCpu, ctxMemory) = podResourceSeq.map {
         v => (v.cpu, v.memory)
-      }.fold((0d, 0)) {
+      }.fold((0, 0)) {
         case (r1, r2) =>
           (r1._1 + r2._1, r1._2 + r2._2)
       }
@@ -98,7 +100,7 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
         case (node, seq) =>
           val (totalCpu, totalMem) = seq.map {
             v => (v.cpu, v.memory)
-          }.fold((0d, 0)) {
+          }.fold((0, 0)) {
             case (r1, r2) =>
               (r1._1 + r2._1, r1._2 + r2._2)
           }
@@ -108,7 +110,7 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
       log.info(s"nodeRemainingResourceMap:\n$nodeRemainingResourceMap")
       currUsedMap.foreach{
         case (node, resource) =>
-          val remainingResource = initNodeRemainingResourceMap.getOrElse(node, Resource(0d, 0)) - resource
+          val remainingResource = initNodeRemainingResourceMap.getOrElse(node, Resource(0, 0)) - resource
           nodeRemainingResourceMap += (node -> remainingResource)
           log.info(s"Finished correct node($node) resource, remaining-cpu = ${remainingResource.cpu}, " +
             s"remaining-memory = ${remainingResource.memory}")
@@ -117,7 +119,7 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
   }
 
   private def updateNodeResource(node: String, resource: Resource, operator: String): Unit = {
-    val currResource = nodeRemainingResourceMap.getOrElse(node, Resource(0d, 0))
+    val currResource = nodeRemainingResourceMap.getOrElse(node, Resource(0, 0))
     val remainingResource = operator match {
       case "+" => currResource + resource
       case "-" => currResource - resource
@@ -134,20 +136,20 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
       case _ if totalCpu < DEFAULT_EXECUTOR_INSTANCES =>
         val memPerExecutor = totalMemory / totalCpu
         if (memPerExecutor >= MIN_EXECUTOR_MEMORY) {
-          (Resource(1d, memPerExecutor), totalCpu)
+          (Resource(1, memPerExecutor), totalCpu)
         } else {
           val instances = math.max(totalMemory / MIN_EXECUTOR_MEMORY, 1)
-          val cpuPerExecutor = math.max(totalCpu.toDouble / instances, MIN_EXECUTOR_CPU)
+          val cpuPerExecutor = math.max(totalCpu / instances, MIN_EXECUTOR_CPU)
           (Resource(cpuPerExecutor, MIN_EXECUTOR_MEMORY), instances)
         }
       case _ =>
         val memPerExecutor = totalMemory / DEFAULT_EXECUTOR_INSTANCES
         if (memPerExecutor >= MIN_EXECUTOR_MEMORY) {
-          val cpuPerExecutor = totalCpu.toDouble / DEFAULT_EXECUTOR_INSTANCES
+          val cpuPerExecutor = totalCpu / DEFAULT_EXECUTOR_INSTANCES
           (Resource(cpuPerExecutor, memPerExecutor), DEFAULT_EXECUTOR_INSTANCES)
         } else {
           val instances = math.max(totalMemory / MIN_EXECUTOR_MEMORY, 1)
-          val cpuPerExecutor = math.max(totalCpu.toDouble / instances, MIN_EXECUTOR_CPU)
+          val cpuPerExecutor = math.max(totalCpu / instances, MIN_EXECUTOR_CPU)
           (Resource(cpuPerExecutor, MIN_EXECUTOR_MEMORY), instances)
         }
     }
@@ -182,7 +184,7 @@ object ResourceAllocator {
                                 nodeName: String)
 
   // memory unit is MB
-  case class Resource(cpu: Double, memory: Int) {
+  case class Resource(cpu: Int, memory: Int) {
     def -(that: Resource): Resource = {
       val newCpu = cpu - that.cpu
       val newMem = memory - that.memory
@@ -196,6 +198,6 @@ object ResourceAllocator {
     }
   }
 
-  case class PodResource(podName: String, nodeName: String, cpu: Double, memory: Int, owner: String = "")
+  case class PodResource(podName: String, nodeName: String, cpu: Int, memory: Int, owner: String = "")
 
 }
