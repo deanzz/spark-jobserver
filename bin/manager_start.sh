@@ -55,6 +55,7 @@ if [ $DEPLOY_MODE = "cluster" -a -z "$REMOTE_JOBSERVER_DIR" ]; then
   "
 #--conf spark.kubernetes.driver.pod.name=spark-driver
 #--conf spark.executor.instances=1
+#--conf spark.locality.wait=30s
 
   JAR_FILE="$appdir/spark-job-server.jar"
   # CONF_FILE=$(basename $conffile)
@@ -68,9 +69,9 @@ elif [ $DEPLOY_MODE == "cluster" -a "$MESOS_CLUSTER_DISPATCHER" ]; then
   SPARK_SUBMIT_OPTIONS="$SPARK_SUBMIT_OPTIONS
     --master $MESOS_CLUSTER_DISPATCHER --deploy-mode cluster
     --conf spark.yarn.submit.waitAppCompletion=false
-    --conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
-    --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
   "
+  #--conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
+  #--conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
   JAR_FILE="$REMOTE_JOBSERVER_DIR/spark-job-server.jar"
   # CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"
   # LOGGING_OPTS="-Dlog4j.configuration=file:$appdir/log4j-cluster.properties"
@@ -85,6 +86,8 @@ elif [ $DEPLOY_MODE == "cluster" ]; then
     --conf spark.ui.port=8000
     --conf spark.kubernetes.driver.label.spark-driver=ture
   "
+  #--conf spark.locality.wait=30s
+
   JAR_FILE="$REMOTE_JOBSERVER_DIR/spark-job-server.jar"
   # CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"
   # LOGGING_OPTS="-Dlog4j.configuration=file:$appdir/log4j-cluster.properties"

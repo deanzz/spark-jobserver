@@ -75,7 +75,7 @@ object SparkJobUtils {
     if (isK8s) {
       conf.set("spark.kubernetes.executor.podNamePrefix", contextName.toLowerCase)
 
-      val executorInstances = Try(contextConfig.getInt("executor-instances")).getOrElse(2)
+      val executorInstances = Try(contextConfig.getInt("executor-instances")).getOrElse(1)
       conf.set("spark.executor.instances", executorInstances.toString)
 
       for (cores <- Try(contextConfig.getInt("num-cpu-cores"))) {
@@ -83,8 +83,10 @@ object SparkJobUtils {
         conf.set("spark.executor.cores", cores.toString)
         // limit cores
         conf.set("spark.kubernetes.executor.limit.cores", cores.toString)
+        val coresMaxMultiple = Try(config.getInt("kubernetes.context.cores.max.multiple")).getOrElse(1)
         // for setting RDD default partition num under DataSourceReader
-        conf.set("spark.cores.max", (cores * executorInstances).toString)
+        val parallelismNum = (cores * executorInstances * coresMaxMultiple).toString
+        conf.set("spark.cores.max", parallelismNum)
       }
 
       for (memory <- Try(contextConfig.getString("memory-per-node"))) {
