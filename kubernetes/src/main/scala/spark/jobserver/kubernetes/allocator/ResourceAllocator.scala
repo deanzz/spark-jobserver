@@ -54,15 +54,18 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
         s"maxRemainingResource.cpu = ${maxRemainingResource.cpu}, " +
         s"maxRemainingResource.memory = ${maxRemainingResource.memory}")
 
-      if (maxRemainingResource.cpu < totalReqCpu || maxRemainingResource.memory < totalReqMemory) {
+      // here MIN_EXECUTOR_CPU and MIN_EXECUTOR_MEMORY is reserved by other service
+      if (maxRemainingResource.cpu - MIN_EXECUTOR_CPU < totalReqCpu
+        || maxRemainingResource.memory - MIN_EXECUTOR_MEMORY < totalReqMemory) {
         throw new Exception(s"No enough resource on max-remaining-resource node $node, " +
           s"requestCpu = $totalReqCpu, requestMemory = $totalExecutorReqMemory, " +
-          s"remainingCpu = ${maxRemainingResource.cpu}, remainingMemory = ${maxRemainingResource.memory}")
+          s"remainingCpu = ${maxRemainingResource.cpu - MIN_EXECUTOR_CPU}, " +
+          s"remainingMemory = ${maxRemainingResource.memory - MIN_EXECUTOR_MEMORY}")
       }
 
       val (resourcePerExecutor, instances) =
         breakUpResource(totalExecutorReqCpu.toInt, totalExecutorReqMemory)
-      // Temporarily deducting resource, it's not accurate
+      // Temporarily deducting resource, it's not accurate, will correct it after pod created
       val resource = Resource(totalReqCpu, totalReqMemory)
       updateNodeResource(node, resource, "-")
       AllocationResponse(req.driverResource, resourcePerExecutor, instances, node)
@@ -110,7 +113,8 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
       log.info(s"nodeRemainingResourceMap:\n$nodeRemainingResourceMap")
       currUsedMap.foreach{
         case (node, resource) =>
-          val remainingResource = initNodeRemainingResourceMap.getOrElse(node, Resource(0, 0)) - resource
+          val remainingResource = initNodeRemainingResourceMap.getOrElse(node, Resource(0, 0)) -
+            resource - Resource(MIN_EXECUTOR_CPU, MIN_EXECUTOR_MEMORY)
           nodeRemainingResourceMap += (node -> remainingResource)
           log.info(s"Finished correct node($node) resource, remaining-cpu = ${remainingResource.cpu}, " +
             s"remaining-memory = ${remainingResource.memory}")
