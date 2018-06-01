@@ -488,6 +488,7 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
               case e: Throwable =>
                 val msg = e.getMessage
                 if (msg.startsWith(AbstractPBJobExceptionKey)) {
+                  logger.error(s"Running job error, $msg", e)
                   val errJsonStart = msg.indexOf(AbstractPBJobExceptionKey) + AbstractPBJobExceptionKey.length
                   val errJson = msg.substring(errJsonStart)
                   workerActor ! RunningJobResult(jobId, succeed = false, errJson)

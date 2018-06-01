@@ -13,10 +13,16 @@ get_abs_script_path
 
 . $appdir/setenv.sh
 
-GC_OPTS="-XX:+UseConcMarkSweepGC
+#GC_OPTS="-XX:+UseConcMarkSweepGC
+#         -verbose:gc -XX:+PrintGCTimeStamps
+#         -XX:MaxPermSize=512m
+#         -XX:+CMSClassUnloadingEnabled "
+
+GC_OPTS="-XX:+UseG1GC
          -verbose:gc -XX:+PrintGCTimeStamps
          -XX:MaxPermSize=512m
          -XX:+CMSClassUnloadingEnabled "
+
 
 ALLUXIO_OPTS="-Dalluxio.user.file.writetype.default=THROUGH -Dalluxio.user.file.readtype.default=NO_CACHE -Dalluxio.user.file.delete.unchecked=true "
 
