@@ -50,17 +50,18 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
             cpu * 1000000000L + memory
         }
 
-      log.info(s"node $node, requestCpu = $totalReqCpu, requestMemory = $totalExecutorReqMemory, " +
-        s"maxRemainingResource.cpu = ${maxRemainingResource.cpu}, " +
-        s"maxRemainingResource.memory = ${maxRemainingResource.memory}")
-
       // here MIN_EXECUTOR_CPU and MIN_EXECUTOR_MEMORY is reserved by other service
-      if (maxRemainingResource.cpu - MIN_EXECUTOR_CPU < totalReqCpu
-        || maxRemainingResource.memory - MIN_EXECUTOR_MEMORY < totalReqMemory) {
+      val remainingCpu = maxRemainingResource.cpu - MIN_EXECUTOR_CPU
+      val remainingMemory = maxRemainingResource.memory - MIN_EXECUTOR_MEMORY
+      log.info(s"node $node, requestCpu = $totalReqCpu, requestMemory = $totalReqMemory, " +
+        s"maxRemainingResource.cpu = $remainingCpu, " +
+        s"maxRemainingResource.memory = $remainingMemory")
+
+      if (remainingCpu < totalReqCpu ||remainingMemory < totalReqMemory) {
         throw new Exception(s"No enough resource on max-remaining-resource node $node, " +
           s"requestCpu = $totalReqCpu, requestMemory = $totalExecutorReqMemory, " +
-          s"remainingCpu = ${maxRemainingResource.cpu - MIN_EXECUTOR_CPU}, " +
-          s"remainingMemory = ${maxRemainingResource.memory - MIN_EXECUTOR_MEMORY}")
+          s"remainingCpu = $remainingCpu, " +
+          s"remainingMemory = $remainingMemory")
       }
 
       val (resourcePerExecutor, instances) =

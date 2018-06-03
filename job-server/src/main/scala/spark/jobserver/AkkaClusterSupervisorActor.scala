@@ -192,94 +192,26 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
             context.system.scheduler.scheduleOnce(BATCH_CREATING_CONTEXT_WAITING_SECOND seconds,
               self, BatchCreatingUpdateContext)
           case _ =>
-            val mergedContextConfig = k8sConfig(
-              contextConfig, driverCpu, driverMemory, totalExecutorCpu, totalExecutorMemory)
-            createOnK8s(mergedContextConfig, name, requestWorker, operatorId, operation)
+            createOnK8s(contextConfig, driverCpu, driverMemory, totalExecutorCpu,
+              totalExecutorMemory, name, requestWorker, operatorId, operation)
         }
       } else {
         self ! AddContext(name, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
       }
 
-    /*def create(): Unit = {
-      Try {
-        val paramMap = parameters2Map(parameters)
-        val contextConfig = ConfigFactory.parseMap(paramMap.asJava)
-        val mergedContextConfig = if (enableK8sCheck) {
-          k8sConfig(contextConfig)
-        } else {
-          contextConfig
-        }
-        self ! AddContext(name, mergedContextConfig, Some(requestWorker), Some(operatorId), Some(operation))
-      } match {
-        case Success(_) =>
-        case Failure(e) =>
-          logger.error(s"Resource allocation error, ${e.getMessage}", e)
-          val err = s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
-          val failed = AddContextFailedWrapper(
-            name, s"Resource allocation error, $err", operatorId, operation)
-          requestWorker ! failed
-          acoMonitor.foreach(m => m ! failed)
-      }
-    }
-
-    if (enableK8sCheck) {
-      // using lower-case context name ONLY under k8s API
-      val lowerName = name.toLowerCase
-      Try(k8sClient.getPodStatus(lowerName)) match {
-        case Success(res) =>
-          logger.info(s"The status of context [$lowerName] in kubernetes is $res")
-          res match {
-            case "NotFound" =>
-              create()
-            case "Running" =>
-              contexts.get(name) match {
-                case Some(ctx) =>
-                  val succeed = AddContextSucceedWrapper(name, ctx._1.path.toString,
-                    operatorId, s"context $name exists", operation)
-                  requestWorker ! succeed
-                  acoMonitor.foreach(m => m ! succeed)
-                case _ =>
-                  logger.warn("Inconsistent jobserver and kubernetes status, " +
-                    s"recreate the context: $name")
-                  k8sClient.deletePod(lowerName)
-                  create()
-              }
-            case _ =>
-              //"Failed" | "Unknown" | "Pending" | "Succeeded"
-              k8sClient.deletePod(lowerName)
-              create()
-          }
-        case Failure(e) =>
-          logger.error(s"AddContextWrapper error, ${e.getMessage}", e)
-          e match {
-            case _: TimeoutException =>
-              val failed = AddContextFailedWrapper(name,
-                s"Kubernetes error, Connect kubernetes API timeout!!",
-                operatorId, operation)
-              requestWorker ! failed
-              acoMonitor.foreach(m => m ! failed)
-            case _ =>
-              val err = s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
-              val failed = AddContextFailedWrapper(
-                name, s"Kubernetes error, $err", operatorId, operation)
-              requestWorker ! failed
-              acoMonitor.foreach(m => m ! failed)
-          }
-      }
-    } else {
-      create()
-    }*/
     case BatchCreatingRefreshContext =>
       if (creatingRefreshContextRequests.nonEmpty) {
         // creating context in descending order of the number of cpu cores
-        val list = creatingRefreshContextRequests.sortBy(c => c.driverCpu + c.totalExecutorCpu).reverse
+        val list = creatingRefreshContextRequests.sortBy {
+          c =>
+            (c.driverCpu + c.totalExecutorCpu) * 100000000 + (c.driverMemory + c.totalExecutorMemory)
+        }.reverse
         logger.info(s"Start BatchCreatingRefreshContext, creatingRefreshContextRequests:" +
           s"\n${list.map(_.toString).mkString("\n")}")
         list.foreach {
           ctx =>
-            val mergedContextConfig = k8sConfig(
-              ctx.config, ctx.driverCpu, ctx.driverMemory, ctx.totalExecutorCpu, ctx.totalExecutorMemory)
-            createOnK8s(mergedContextConfig, ctx.name, ctx.requestWorker, ctx.operatorId, ctx.operation)
+            createOnK8s(ctx.config, ctx.driverCpu, ctx.driverMemory, ctx.totalExecutorCpu,
+              ctx.totalExecutorMemory, ctx.name, ctx.requestWorker, ctx.operatorId, ctx.operation)
         }
         creatingRefreshContextRequests.clear()
       }
@@ -287,14 +219,16 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     case BatchCreatingUpdateContext =>
       if (creatingUpdateContextRequests.nonEmpty) {
         // creating context in descending order of the number of cpu cores
-        val list = creatingUpdateContextRequests.sortBy(c => c.driverCpu + c.totalExecutorCpu).reverse
+        val list = creatingUpdateContextRequests.sortBy {
+          c =>
+            (c.driverCpu + c.totalExecutorCpu) * 100000000 + (c.driverMemory + c.totalExecutorMemory)
+        }.reverse
         logger.info(s"Start BatchCreatingUpdateContext, creatingUpdateContextRequests:" +
           s"\n${list.map(_.toString).mkString("\n")}")
         list.foreach {
           ctx =>
-            val mergedContextConfig = k8sConfig(
-              ctx.config, ctx.driverCpu, ctx.driverMemory, ctx.totalExecutorCpu, ctx.totalExecutorMemory)
-            createOnK8s(mergedContextConfig, ctx.name, ctx.requestWorker, ctx.operatorId, ctx.operation)
+            createOnK8s(ctx.config, ctx.driverCpu, ctx.driverMemory, ctx.totalExecutorCpu,
+              ctx.totalExecutorMemory, ctx.name, ctx.requestWorker, ctx.operatorId, ctx.operation)
         }
         creatingUpdateContextRequests.clear()
       }
@@ -422,7 +356,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
           // increase node resource
           val lowerName = name.toLowerCase
           resourceAllocator.recycleNodeResource(lowerName)
-          Try(k8sClient.podLog(lowerName)) match {
+          /*Try(k8sClient.podLog(lowerName)) match {
             case Success(log) =>
               logger.error(s"error log from k8s:\n$log")
               acoMonitor.foreach(m => m ! ContextTerminated(name, log))
@@ -432,8 +366,9 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
                 case _ => s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
               }
               acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg))
-          }
-
+          }*/
+          val errMsg = s"Context($name) terminated! it will return error log on the future version"
+          acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg))
         } else {
           acoMonitor.foreach(m => m ! ContextTerminated(name,
             "No error log when kubernetes.check.enable is false"))
@@ -598,33 +533,50 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     ).withFallback(contextConfig)
   }
 
-  private def createOnK8s(contextConfig: Config, name: String,
+  private def createOnK8s(contextConfig: Config, driverCpu: Int, driverMemory: Int,
+                          totalExecutorCpu: Int, totalExecutorMemory: Int, name: String,
                           requestWorker: ActorRef, operatorId: String, operation: String): Unit = {
     // using lower-case context name ONLY under k8s API
     val lowerName = name.toLowerCase
     Try(k8sClient.getPodStatus(lowerName)) match {
       case Success(res) =>
-        logger.info(s"The status of context [$lowerName] in kubernetes is $res")
-        res match {
-          case "NotFound" =>
-            self ! AddContext(name, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
-          case "Running" =>
-            contexts.get(name) match {
-              case Some(ctx) =>
-                val succeed = AddContextSucceedWrapper(name, ctx._1.path.toString,
-                  operatorId, s"context $name exists", operation)
-                requestWorker ! succeed
-                acoMonitor.foreach(m => m ! succeed)
-              case _ =>
-                logger.warn("Inconsistent jobserver and kubernetes status, " +
-                  s"recreate the context: $name")
-                k8sClient.deletePod(lowerName)
-                self ! AddContext(name, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
-            }
-          case _ =>
-            //"Failed" | "Unknown" | "Pending" | "Succeeded"
-            k8sClient.deletePod(lowerName)
-            self ! AddContext(name, contextConfig, Some(requestWorker), Some(operatorId), Some(operation))
+        Try {
+          val mergedContextConfig = k8sConfig(
+            contextConfig, driverCpu, driverMemory, totalExecutorCpu, totalExecutorMemory)
+          logger.info(s"The status of context [$lowerName] in kubernetes is $res")
+          res match {
+            case "NotFound" =>
+              self ! AddContext(name, mergedContextConfig,
+                Some(requestWorker), Some(operatorId), Some(operation))
+            case "Running" =>
+              contexts.get(name) match {
+                case Some(ctx) =>
+                  val succeed = AddContextSucceedWrapper(name, ctx._1.path.toString,
+                    operatorId, s"context $name exists", operation)
+                  requestWorker ! succeed
+                  acoMonitor.foreach(m => m ! succeed)
+                case _ =>
+                  logger.warn("Inconsistent jobserver and kubernetes status, " +
+                    s"recreate the context: $name")
+                  k8sClient.deletePod(lowerName)
+                  self ! AddContext(name, mergedContextConfig,
+                    Some(requestWorker), Some(operatorId), Some(operation))
+              }
+            case _ =>
+              //"Failed" | "Unknown" | "Pending" | "Succeeded"
+              k8sClient.deletePod(lowerName)
+              self ! AddContext(name, mergedContextConfig,
+                Some(requestWorker), Some(operatorId), Some(operation))
+          }
+        } match {
+          case Success(_) =>
+          case Failure(e) =>
+            logger.error(s"Resource allocation error, ${e.getMessage}", e)
+            val err = s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
+            val failed = AddContextFailedWrapper(
+              name, s"Resource allocation error, $err", operatorId, operation)
+            requestWorker ! failed
+            acoMonitor.foreach(m => m ! failed)
         }
       case Failure(e) =>
         logger.error(s"AddContextWrapper error, ${e.getMessage}", e)
