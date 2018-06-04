@@ -356,13 +356,15 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
           Try(k8sClient.podLog(lowerName)) match {
             case Success(log) =>
               logger.error(s"error log from k8s:\n$log")
-              acoMonitor.foreach(m => m ! ContextTerminated(name, log, isStoppedByUser))
+              acoMonitor.foreach(m => m ! ContextTerminated(name,
+                s"\n----start----$log\n----end----", isStoppedByUser))
             case Failure(e) =>
               val errMsg = e match {
                 case _: TimeoutException => "Connect kubernetes API timeout!!"
                 case _ => s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
               }
-              acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg, isStoppedByUser))
+              acoMonitor.foreach(m => m ! ContextTerminated(name,
+                s"\n----start----$errMsg\n----end----", isStoppedByUser))
           }
           /*val errMsg = s"Context($name) terminated! it will return error log on the future version"
           acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg))*/
