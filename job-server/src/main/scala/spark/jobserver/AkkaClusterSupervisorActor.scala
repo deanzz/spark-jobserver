@@ -80,8 +80,8 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   private val contextInitInfos = mutable.HashMap.empty[String,
     (Config, Boolean, ActorRef => Unit, Throwable => Unit)]
 
-  // actor name -> (JobManagerActor ref, ResultActor ref)
-  private val contexts = mutable.HashMap.empty[String, (ActorRef, ActorRef)]
+  // actor name -> (JobManagerActor ref, ResultActor ref, Boolean isStoppedByUser)
+  private val contexts = mutable.HashMap.empty[String, (ActorRef, ActorRef, Boolean)]
 
   private val cluster = Cluster(context.system)
   private val selfAddress = cluster.selfAddress
@@ -311,7 +311,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
     case GetSparkWebUI(name) =>
       contexts.get(name) match {
-        case Some((actor, _)) =>
+        case Some((actor, _, _)) =>
           val future = (actor ? GetSparkWebUIUrl) (contextTimeout.seconds)
           val originator = sender
           future.collect {
@@ -327,17 +327,13 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     case StopContext(name) =>
       if (contexts contains name) {
         logger.info("Shutting down context {}", name)
-        val contextActorRef = contexts(name)._1
+        val (contextActorRef, resultRef, _) = contexts(name)
+        contexts.update(name, (contextActorRef, resultRef, true))
         cluster.down(contextActorRef.path.address)
         try {
           val stoppedCtx = gracefulStop(contexts(name)._1, contextDeletionTimeout seconds)
           Await.result(stoppedCtx, contextDeletionTimeout + 1 seconds)
           sender ! ContextStopped
-          if (enableK8sCheck) {
-            val lowerName = name.toLowerCase
-            // increase node resource
-            resourceAllocator.recycleNodeResource(lowerName)
-          }
         }
         catch {
           case err: Exception => sender ! ContextStopError(err)
@@ -350,28 +346,29 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       val name: String = actorRef.path.name
       logger.info("Actor terminated: {}", name)
       for ((name, _) <- contexts.find(_._2._1 == actorRef)) {
+        val (_, _, isStoppedByUser) = contexts(name)
         contexts.remove(name)
         daoActor ! CleanContextJobInfos(name, DateTime.now())
         if (enableK8sCheck) {
           // increase node resource
           val lowerName = name.toLowerCase
           resourceAllocator.recycleNodeResource(lowerName)
-          /*Try(k8sClient.podLog(lowerName)) match {
+          Try(k8sClient.podLog(lowerName)) match {
             case Success(log) =>
               logger.error(s"error log from k8s:\n$log")
-              acoMonitor.foreach(m => m ! ContextTerminated(name, log))
+              acoMonitor.foreach(m => m ! ContextTerminated(name, log, isStoppedByUser))
             case Failure(e) =>
               val errMsg = e match {
                 case _: TimeoutException => "Connect kubernetes API timeout!!"
                 case _ => s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
               }
-              acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg))
-          }*/
-          val errMsg = s"Context($name) terminated! it will return error log on the future version"
-          acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg))
+              acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg, isStoppedByUser))
+          }
+          /*val errMsg = s"Context($name) terminated! it will return error log on the future version"
+          acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg))*/
         } else {
           acoMonitor.foreach(m => m ! ContextTerminated(name,
-            "No error log when kubernetes.check.enable is false"))
+            "No error log when kubernetes.check.enable is false", isStoppedByUser))
         }
       }
       cluster.down(actorRef.path.address)
@@ -401,7 +398,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         failureFunc(t)
       case Success(JobManagerActor.Initialized(ctxName, resActor)) =>
         logger.info("SparkContext {} joined", ctxName)
-        contexts(ctxName) = (ref, resActor)
+        contexts(ctxName) = (ref, resActor, false)
         context.watch(ref)
         successFunc(ref)
       case _ => logger.info("Failed for unknown reason.")
