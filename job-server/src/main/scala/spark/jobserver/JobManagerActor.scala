@@ -152,12 +152,6 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   private val cluster = Cluster(context.system)
   //private val clusterAddress = clusterAddressOpt.flatMap(s => Some(AddressFromURIString.parse(s)))
   private val AbstractPBJobExceptionKey = "AbstractPBJob_"
- /* private val enableK8sCheck = Try(config.getBoolean("kubernetes.check.enable")).getOrElse(false)
-  private val k8sClient = new K8sHttpClient(config)
-  private val acoMonitor: Option[ActorRef] = Some(context.system.actorOf(ClusterSingletonProxy.props(
-    singletonManagerPath = "/user/jobserver-monitor",
-    settings = ClusterSingletonProxySettings(context.system).withRole("scheduler")),
-    name = "jobserver-monitor-proxy"))*/
 
   private def getEnvironment(_jobId: String): JobEnvironment = {
     val _contextCfg = contextConfig
@@ -175,7 +169,6 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
   }
 
   override def preStart(): Unit = {
-    context.watch(self)
     cluster.subscribe(self, initialStateMode = InitialStateAsEvents,
       classOf[UnreachableMember])
     logger.info("JobManagerActor preStart")
@@ -201,22 +194,6 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
       override def onApplicationEnd(event: SparkListenerApplicationEnd) {
         logger.info(s"Got Spark Application end event, " +
           s"context [$contextName] is killed due to exception.")
-        /*if (enableK8sCheck) {
-          Try(k8sClient.podLog(contextName)) match {
-            case Success(log) =>
-              logger.error(s"error log from k8s:\n$log")
-              acoMonitor.foreach(m => m ! ContextTerminated(contextName, log))
-            case Failure(e) =>
-              val errMsg = e match {
-                case _: TimeoutException => "Connect kubernetes API timeout!!"
-                case _ => s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
-              }
-              acoMonitor.foreach(m => m ! ContextTerminated(contextName, errMsg))
-          }
-        } else {
-          acoMonitor.foreach(m => m ! ContextTerminated(contextName,
-            "No error log when kubernetes.check.enable is false"))
-        }*/
         self ! PoisonPill
       }
     }
