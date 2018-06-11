@@ -44,25 +44,30 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
       if (nodeRemainingResourceMap.isEmpty) {
         initNodeResource()
       }
-      val (node, maxRemainingResource) =
-        nodeRemainingResourceMap.maxBy {
-          case (_, Resource(cpu, memory)) =>
-            cpu * 1000000000L + memory
+
+      val availableNodes = nodeRemainingResourceMap.filter {
+        case (_, Resource(cpu, memory)) =>
+          // here MIN_EXECUTOR_CPU and MIN_EXECUTOR_MEMORY is reserved by other service
+          cpu >= totalReqCpu + MIN_EXECUTOR_CPU && memory >= totalReqMemory + MIN_EXECUTOR_MEMORY
+      }
+
+      val maxRemainingResourceNode =
+        if (availableNodes.nonEmpty) {
+          Some(availableNodes.maxBy {
+            case (_, Resource(cpu, memory)) =>
+              cpu * 1000000000L + memory
+          })
+        } else {
+          None
         }
 
-      // here MIN_EXECUTOR_CPU and MIN_EXECUTOR_MEMORY is reserved by other service
-      val remainingCpu = maxRemainingResource.cpu - MIN_EXECUTOR_CPU
-      val remainingMemory = maxRemainingResource.memory - MIN_EXECUTOR_MEMORY
-      log.info(s"node $node, requestCpu = $totalReqCpu, requestMemory = $totalReqMemory, " +
-        s"maxRemainingResource.cpu = $remainingCpu, " +
-        s"maxRemainingResource.memory = $remainingMemory")
-
-      if (remainingCpu < totalReqCpu ||remainingMemory < totalReqMemory) {
-        throw new Exception(s"No enough resource on max-remaining-resource node $node, " +
-          s"requestCpu = $totalReqCpu, requestMemory = $totalExecutorReqMemory, " +
-          s"remainingCpu = $remainingCpu, " +
-          s"remainingMemory = $remainingMemory")
+      if (maxRemainingResourceNode.isEmpty) {
+        throw new Exception(s"No enough resource on all of the nodes, " +
+          s"requestCpu = $totalReqCpu, requestMemory = $totalReqMemory," +
+          s" remaining resource:\n$nodeRemainingResourceMap")
       }
+
+      val node = maxRemainingResourceNode.get._1
 
       val (resourcePerExecutor, instances) =
         breakUpResource(totalExecutorReqCpu.toInt, totalExecutorReqMemory)
@@ -112,7 +117,7 @@ class ResourceAllocator(config: Config)(implicit system: ActorSystem) {
       }
       log.info(s"currUsedMap:\n$currUsedMap")
       log.info(s"nodeRemainingResourceMap:\n$nodeRemainingResourceMap")
-      currUsedMap.foreach{
+      currUsedMap.foreach {
         case (node, resource) =>
           val remainingResource = initNodeRemainingResourceMap.getOrElse(node, Resource(0, 0)) -
             resource - Resource(MIN_EXECUTOR_CPU, MIN_EXECUTOR_MEMORY)
