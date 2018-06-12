@@ -34,6 +34,7 @@ JAVA_OPTS="-XX:MaxDirectMemorySize=$MAX_DIRECT_MEMORY
            -DconfigServerPort=2502
            $ALLUXIO_OPTS
           "
+#LOG_OPTIONS="-Dlog4j.configuration=file:./conf/log4j-server.properties"
 
 MAIN="spark.jobserver.JobManager"
 MASTER=$1
@@ -58,10 +59,16 @@ if [ $DEPLOY_MODE = "cluster" -a -z "$REMOTE_JOBSERVER_DIR" ]; then
     --conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
     --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
     --conf spark.kubernetes.driver.label.spark-driver=ture
+    --conf spark.serializer=org.apache.spark.serializer.KryoSerializer
+    --conf spark.kryoserializer.buffer.max=512m
+    --conf spark.kryoserializer.buffer=512k
+    --conf spark.kryo.classesToRegister=scala.collection.mutable.ArrayBuffer,scala.collection.mutable.ListBuffer
+    --conf spark.sql.caseSensitive=true
+    --conf spark.sql.autoBroadcastJoinThreshold=-1
+    --conf spark.executor.heartbeatInterval=60s
+    --conf spark.driver.maxResultSize=3g
   "
-#--conf spark.kubernetes.driver.pod.name=spark-driver
-#--conf spark.executor.instances=1
-#--conf spark.locality.wait=30s
+
 
   JAR_FILE="$appdir/spark-job-server.jar"
   # CONF_FILE=$(basename $conffile)
@@ -76,8 +83,7 @@ elif [ $DEPLOY_MODE == "cluster" -a "$MESOS_CLUSTER_DISPATCHER" ]; then
     --master $MESOS_CLUSTER_DISPATCHER --deploy-mode cluster
     --conf spark.yarn.submit.waitAppCompletion=false
   "
-  #--conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
-  #--conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
+
   JAR_FILE="$REMOTE_JOBSERVER_DIR/spark-job-server.jar"
   # CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"
   # LOGGING_OPTS="-Dlog4j.configuration=file:$appdir/log4j-cluster.properties"
@@ -91,8 +97,15 @@ elif [ $DEPLOY_MODE == "cluster" ]; then
     --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
     --conf spark.ui.port=8000
     --conf spark.kubernetes.driver.label.spark-driver=ture
+    --conf spark.serializer=org.apache.spark.serializer.KryoSerializer
+    --conf spark.kryoserializer.buffer.max=512m
+    --conf spark.kryoserializer.buffer=512k
+    --conf spark.kryo.classesToRegister=scala.collection.mutable.ArrayBuffer,scala.collection.mutable.ListBuffer
+    --conf spark.sql.caseSensitive=true
+    --conf spark.sql.autoBroadcastJoinThreshold=-1
+    --conf spark.executor.heartbeatInterval=60s
+    --conf spark.driver.maxResultSize=3g
   "
-  #--conf spark.locality.wait=30s
 
   JAR_FILE="$REMOTE_JOBSERVER_DIR/spark-job-server.jar"
   # CONF_FILE="$REMOTE_JOBSERVER_DIR/$(basename $conffile)"
@@ -161,3 +174,27 @@ echo "JOBSERVER_PORT:" $JOBSERVER_PORT
 echo "cmd:" $cmd
 
 eval $cmd 2>&1 > $CONTEXT_DIR/spark-job-server.out
+
+#---config under spark-defaults.conf----
+#spark.mesos.coarse      true
+#
+#spark.driver.extraJavaOptions      -Dlog4j.configuration=file:./conf/log4j-server.properties -Dalluxio.user.file.writetype.default=THROUGH -Dalluxio.user.file.readtype.default=NO_CACHE
+#spark.executor.extraJavaOptions    -Dlog4j.configuration=file:./conf/log4j-server.properties -Dalluxio.user.file.writetype.default=THROUGH -Dalluxio.user.file.readtype.default=NO_CACHE
+#
+##spark.driver.extraClassPath     /home/ec2-user/nlp/stanford-chinese-corenlp-2017-06-09-models.jar:/home/ec2-user/nlp/stanford-corenlp-3.8.0.jar:/home/ec2-user/nlp/stanford-english-corenlp-2017-06-09-models.jar
+##spark.executor.extraClassPath   /home/ec2-user/nlp/stanford-chinese-corenlp-2017-06-09-models.jar:/home/ec2-user/nlp/stanford-corenlp-3.8.0.jar:/home/ec2-user/nlp/stanford-english-corenlp-2017-06-09-models.jar
+#
+#spark.serializer                   org.apache.spark.serializer.KryoSerializer
+#
+#spark.kryoserializer.buffer.max    512m
+#spark.kryoserializer.buffer        512k
+#spark.kryo.classesToRegister       scala.collection.mutable.ArrayBuffer,scala.collection.mutable.ListBuffer
+#
+#spark.executor.extraJavaOptions   -Xss4m
+#
+#spark.sql.caseSensitive           true
+#
+#spark.sql.autoBroadcastJoinThreshold -1
+#spark.executor.heartbeatInterval   60s
+#
+#spark.driver.maxResultSize        3g
