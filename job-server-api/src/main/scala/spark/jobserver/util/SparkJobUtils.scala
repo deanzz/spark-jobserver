@@ -4,6 +4,7 @@ import java.util.concurrent.TimeUnit
 
 import com.typesafe.config.Config
 import org.apache.spark.SparkConf
+import org.slf4j.LoggerFactory
 
 import scala.util.Try
 
@@ -13,6 +14,8 @@ import scala.util.Try
 object SparkJobUtils {
 
   import collection.JavaConverters._
+
+  val logger = LoggerFactory.getLogger(getClass)
 
   val NameContextDelimiter = "~"
 
@@ -92,6 +95,7 @@ object SparkJobUtils {
       for (memory <- Try(contextConfig.getString("memory-per-node"))) {
         conf.set("spark.executor.memory", memory)
       }
+
     } else {
       for (cores <- Try(contextConfig.getInt("num-cpu-cores"))) {
         conf.set("spark.cores.max", cores.toString)
@@ -101,12 +105,12 @@ object SparkJobUtils {
       for (nodeMemStr <- Try(contextConfig.getString("memory-per-node"))) {
         conf.set("spark.executor.memory", nodeMemStr)
       }
+
+      // Set the Jetty port to 0 to find a random port
+      conf.set("spark.ui.port", "0")
     }
 
     Try(config.getString("spark.home")).foreach { home => conf.setSparkHome(home) }
-
-    // Set the Jetty port to 0 to find a random port
-    conf.set("spark.ui.port", "0")
 
     // Set number of akka threads
     // TODO: need to figure out how many extra threads spark needs, besides the job threads
@@ -114,7 +118,10 @@ object SparkJobUtils {
 
     // Set any other settings in context config that start with "spark"
     for (e <- contextConfig.entrySet().asScala if e.getKey.startsWith("spark.")) {
-      conf.set(e.getKey, e.getValue.unwrapped.toString)
+      val k = e.getKey
+      val v = e.getValue.unwrapped.toString
+      conf.set(k, v)
+      logger.info(s"set other settings, $k = $v")
     }
 
     // Set any other settings in context config that start with "passthrough"

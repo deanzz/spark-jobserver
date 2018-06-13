@@ -67,6 +67,7 @@ if [ $DEPLOY_MODE = "cluster" -a -z "$REMOTE_JOBSERVER_DIR" ]; then
     --conf spark.sql.autoBroadcastJoinThreshold=-1
     --conf spark.executor.heartbeatInterval=60s
     --conf spark.driver.maxResultSize=3g
+    --conf spark.ui.port=4040
   "
 
 
@@ -95,7 +96,6 @@ elif [ $DEPLOY_MODE == "cluster" ]; then
     --conf spark.yarn.submit.waitAppCompletion=false
     --conf spark.kubernetes.container.image=$SPARK_DOCKER_IMAGE
     --conf spark.kubernetes.driver.container.image=$SPARK_DOCKER_IMAGE
-    --conf spark.ui.port=8000
     --conf spark.kubernetes.driver.label.spark-driver=ture
     --conf spark.serializer=org.apache.spark.serializer.KryoSerializer
     --conf spark.kryoserializer.buffer.max=512m
@@ -105,6 +105,7 @@ elif [ $DEPLOY_MODE == "cluster" ]; then
     --conf spark.sql.autoBroadcastJoinThreshold=-1
     --conf spark.executor.heartbeatInterval=60s
     --conf spark.driver.maxResultSize=3g
+    --conf spark.ui.port=4040
   "
 
   JAR_FILE="$REMOTE_JOBSERVER_DIR/spark-job-server.jar"
@@ -174,6 +175,9 @@ echo "JOBSERVER_PORT:" $JOBSERVER_PORT
 echo "cmd:" $cmd
 
 eval $cmd 2>&1 > $CONTEXT_DIR/spark-job-server.out
+
+#RESULT=$(curl http://jobserver.kmtongji.com/contexts/$K8S_POD_NAME)
+#echo "curl http://jobserver.kmtongji.com/contexts/$K8S_POD_NAME: $RESULT"  >> $CONTEXT_DIR/spark-job-server.out
 
 #---config under spark-defaults.conf----
 #spark.mesos.coarse      true
