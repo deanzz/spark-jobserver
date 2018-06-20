@@ -20,8 +20,7 @@ get_abs_script_path
 
 GC_OPTS="-XX:+UseG1GC
          -verbose:gc -XX:+PrintGCTimeStamps
-         -XX:MaxPermSize=512m
-         -XX:+CMSClassUnloadingEnabled "
+         -XX:MaxPermSize=512m"
 
 
 ALLUXIO_OPTS="-Dalluxio.user.file.writetype.default=THROUGH -Dalluxio.user.file.readtype.default=NO_CACHE -Dalluxio.user.file.delete.unchecked=true "
@@ -34,7 +33,7 @@ JAVA_OPTS="-XX:MaxDirectMemorySize=$MAX_DIRECT_MEMORY
            -DconfigServerPort=2502
            $ALLUXIO_OPTS
           "
-#LOG_OPTIONS="-Dlog4j.configuration=file:./conf/log4j-server.properties"
+LOG_OPTIONS="-Dlog4j.configuration=file:/opt/spark/conf/log4j.properties"
 
 MAIN="spark.jobserver.JobManager"
 MASTER=$1
@@ -69,7 +68,6 @@ if [ $DEPLOY_MODE = "cluster" -a -z "$REMOTE_JOBSERVER_DIR" ]; then
     --conf spark.driver.maxResultSize=3g
     --conf spark.ui.port=4040
   "
-
 
   JAR_FILE="$appdir/spark-job-server.jar"
   # CONF_FILE=$(basename $conffile)
@@ -151,19 +149,18 @@ fi
 cmd='$SPARK_HOME/bin/spark-submit --class $MAIN $SPARK_DRIVER_OPTIONS
       --conf "spark.executor.extraJavaOptions=$ALLUXIO_OPTS"
       $SPARK_SUBMIT_OPTIONS
-      --driver-java-options "$GC_OPTS $JAVA_OPTS $CONFIG_OVERRIDES $SPARK_SUBMIT_JAVA_OPTIONS"
+      --driver-java-options "$GC_OPTS $JAVA_OPTS $CONFIG_OVERRIDES $SPARK_SUBMIT_JAVA_OPTIONS $LOG_OPTIONS"
       $JAR_FILE $CLUSTER_ENTRY_NODE $CONTEXT_ACTOR_NAME $JOBSERVER_PORT $JOBSERVER_HOST'
 
 echo "SPARK_DOCKER_IMAGE:" $SPARK_DOCKER_IMAGE
 echo "SPARK_HOME:" $SPARK_HOME
 echo "MAIN:" $MAIN
 echo "SPARK_DRIVER_OPTIONS:" $SPARK_DRIVER_OPTIONS
-# echo "LOGGING_OPTS:" $LOGGING_OPTS
+echo "LOG_OPTIONS:" $LOG_OPTIONS
 echo "ALLUXIO_OPTS:" $ALLUXIO_OPTS
 echo "SPARK_SUBMIT_OPTIONS:" $SPARK_SUBMIT_OPTIONS
 echo "GC_OPTS:" $GC_OPTS
 echo "JAVA_OPTS:" $JAVA_OPTS
-# echo "LOGGING_OPTS:" $LOGGING_OPTS
 echo "CONFIG_OVERRIDES:" $CONFIG_OVERRIDES
 echo "SPARK_SUBMIT_JAVA_OPTIONS:" $SPARK_SUBMIT_JAVA_OPTIONS
 echo "JAR_FILE:" $JAR_FILE

@@ -121,7 +121,7 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
   }
 
   private def parsePodListResp(resp: String): Seq[PodResource] = {
-    log.info(s"resp:\n$resp")
+    log.debug(s"resp:\n$resp")
     val map = JsonUtils.mapFromJson(resp)
     val items = map("items").asInstanceOf[List[Map[String, Any]]]
     items.map {
@@ -158,7 +158,7 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
   }
 
   private def parsePodResourceResp(resp: String): PodResource = {
-    log.info(s"resp:\n$resp")
+    log.debug(s"resp:\n$resp")
     val map = JsonUtils.mapFromJson(resp)
     val metadata = map("metadata").asInstanceOf[Map[String, Any]]
     val podName = metadata("name").asInstanceOf[String]
@@ -182,7 +182,7 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
   }
 
   private def parsePodStatusResp(resp: String) = {
-    log.info(s"resp:\n$resp")
+    log.debug(s"resp:\n$resp")
     val map = JsonUtils.mapFromJson(resp)
     val status = map("status")
     if (Try(status.asInstanceOf[String]).getOrElse("") == "Failure") {
@@ -193,7 +193,7 @@ class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
   }
 
   private def parseNodeStatusResp(resp: String): (Int, Int) = {
-    log.info(s"resp:\n$resp")
+    log.debug(s"resp:\n$resp")
     val map = JsonUtils.mapFromJson(resp)
     if (resp.contains("\"status\"") && resp.contains("\"allocatable\"")) {
       val status = map("status")

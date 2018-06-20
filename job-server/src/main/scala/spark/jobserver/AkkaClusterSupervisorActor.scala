@@ -204,7 +204,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         // creating context in descending order of the number of cpu cores
         val list = creatingRefreshContextRequests.sortBy {
           c =>
-            (c.driverCpu + c.totalExecutorCpu) * 100000000 + (c.driverMemory + c.totalExecutorMemory)
+            (c.driverCpu + c.totalExecutorCpu) * 1000000000L + (c.driverMemory + c.totalExecutorMemory)
         }.reverse
         logger.info(s"Start BatchCreatingRefreshContext, creatingRefreshContextRequests:" +
           s"\n${list.map(_.toString).mkString("\n")}")
@@ -221,7 +221,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         // creating context in descending order of the number of cpu cores
         val list = creatingUpdateContextRequests.sortBy {
           c =>
-            (c.driverCpu + c.totalExecutorCpu) * 100000000 + (c.driverMemory + c.totalExecutorMemory)
+            (c.driverCpu + c.totalExecutorCpu) * 1000000000L + (c.driverMemory + c.totalExecutorMemory)
         }.reverse
         logger.info(s"Start BatchCreatingUpdateContext, creatingUpdateContextRequests:" +
           s"\n${list.map(_.toString).mkString("\n")}")
@@ -355,16 +355,16 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
           resourceAllocator.recycleNodeResource(lowerName)
           Try(k8sClient.podLog(lowerName)) match {
             case Success(log) =>
-              logger.error(s"error log from k8s:\n$log")
+              logger.error(s"error log from k8s:\n----start----\n$log\n----end----")
               acoMonitor.foreach(m => m ! ContextTerminated(name,
-                s"\n----start----$log\n----end----", isStoppedByUser))
+                s"\n----start----\n$log\n----end----", isStoppedByUser))
             case Failure(e) =>
               val errMsg = e match {
                 case _: TimeoutException => "Connect kubernetes API timeout!!"
                 case _ => s"${e.getMessage}\n${e.getStackTrace.map(_.toString).mkString("\n")}"
               }
               acoMonitor.foreach(m => m ! ContextTerminated(name,
-                s"\n----start----$errMsg\n----end----", isStoppedByUser))
+                s"\n----start----\n$errMsg\n----end----", isStoppedByUser))
           }
           /*val errMsg = s"Context($name) terminated! it will return error log on the future version"
           acoMonitor.foreach(m => m ! ContextTerminated(name, errMsg))*/
