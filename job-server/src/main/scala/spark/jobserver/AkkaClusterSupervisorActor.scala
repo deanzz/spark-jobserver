@@ -96,7 +96,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
   private val creatingRefreshContextRequests = ListBuffer.empty[CreatingContextRequest]
   private val creatingUpdateContextRequests = ListBuffer.empty[CreatingContextRequest]
-  private val BATCH_CREATING_CONTEXT_WAITING_SECOND = 3
+  private val BATCH_CREATING_CONTEXT_WAITING_SECOND = 5
   private val sparkUIHostMap = mutable.Map.empty[String, String]
 
   logger.info("AkkaClusterSupervisor initialized on {}", selfAddress)

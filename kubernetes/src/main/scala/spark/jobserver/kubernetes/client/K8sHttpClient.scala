@@ -23,7 +23,6 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.util.{Failure, Success, Try}
-import spray.http.HttpHeaders._
 
 class K8sHttpClient(config: Config)(implicit system: ActorSystem) {
 
