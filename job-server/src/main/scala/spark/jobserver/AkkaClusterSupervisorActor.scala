@@ -97,6 +97,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   private val creatingRefreshContextRequests = ListBuffer.empty[CreatingContextRequest]
   private val creatingUpdateContextRequests = ListBuffer.empty[CreatingContextRequest]
   private val BATCH_CREATING_CONTEXT_WAITING_SECOND = 3
+  private val sparkUIHostMap = mutable.Map.empty[String, String]
 
   logger.info("AkkaClusterSupervisor initialized on {}", selfAddress)
 
@@ -253,24 +254,62 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         startContext(name, mergedConfig, isAdHoc = false) { ref =>
           originator ! ContextInitialized
           if (workerActor.isDefined) {
-            Try {
-              // reduce node resource
-              resourceAllocator.correctNodeResource(lowerName)
-            } match {
-              case Success(_) =>
-              case Failure(e) =>
-                val errMsg = s"Reduce node resource failed, " +
-                  s"${e.getMessage}\n${e.getStackTrace.map(t => t.toString).mkString("\n")}"
-                logger.error(s"Reduce node resource failed, ${e.getMessage}", e)
+            // open service port and add ingress rule of spark ui
+            val serviceOpt = k8sClient.getServiceByPod(name)
+            serviceOpt match {
+              case Some(service) =>
+                Try {
+                  val openPortSucceed = k8sClient.openServicePort(service.name)
+                  if (openPortSucceed) {
+                    val (newRuleSucceed, sparkUIHost) = k8sClient.newIngressRule(name, service.name)
+                    sparkUIHostMap += (name -> s"http://$sparkUIHost")
+                    openPortSucceed && newRuleSucceed
+                  } else {
+                    false
+                  }
+                } match {
+                  case Success(good) =>
+                    if (good) {
+                      Try {
+                        // reduce node resource
+                        resourceAllocator.correctNodeResource(lowerName)
+                      } match {
+                        case Success(_) =>
+                          val succeed = AddContextSucceedWrapper(name, ref.path.toString,
+                            operatorId.get, "SUCCESS", operation.get)
+                          workerActor.get ! succeed
+                          acoMonitor.foreach(m => m ! succeed)
+                        case Failure(e) =>
+                          val errMsg = s"Reduce node resource failed, " +
+                            s"${e.getMessage}\n${e.getStackTrace.map(t => t.toString).mkString("\n")}"
+                          logger.error(s"Reduce node resource failed, ${e.getMessage}", e)
+                          val failed = AddContextFailedWrapper(name, errMsg, operatorId.get, operation.get)
+                          workerActor.get ! failed
+                          acoMonitor.foreach(m => m ! failed)
+                      }
+                    } else {
+                      val errMsg = s"Open service port or add ingress rule of pod($name) failed"
+                      logger.error(errMsg)
+                      val failed = AddContextFailedWrapper(name, errMsg, operatorId.get, operation.get)
+                      workerActor.get ! failed
+                      acoMonitor.foreach(m => m ! failed)
+                    }
+                  case Failure(e) =>
+                    val errMsg = s"Open service port or add ingress rule of pod($name) failed, " +
+                      s"${e.getMessage}\n${e.getStackTrace.map(t => t.toString).mkString("\n")}"
+                    logger.error(
+                      s"Open service port or add ingress rule of pod($name) failed, ${e.getMessage}", e)
+                    val failed = AddContextFailedWrapper(name, errMsg, operatorId.get, operation.get)
+                    workerActor.get ! failed
+                    acoMonitor.foreach(m => m ! failed)
+                }
+              case None =>
+                val errMsg = s"Get service by pod($name) failed"
+                logger.error(errMsg)
                 val failed = AddContextFailedWrapper(name, errMsg, operatorId.get, operation.get)
                 workerActor.get ! failed
                 acoMonitor.foreach(m => m ! failed)
             }
-
-            val succeed = AddContextSucceedWrapper(name, ref.path.toString,
-              operatorId.get, "SUCCESS", operation.get)
-            workerActor.get ! succeed
-            acoMonitor.foreach(m => m ! succeed)
           }
         } { err =>
           originator ! ContextInitError(err)
@@ -315,7 +354,14 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
           val future = (actor ? GetSparkWebUIUrl) (contextTimeout.seconds)
           val originator = sender
           future.collect {
-            case SparkWebUIUrl(webUi) => originator ! WebUIForContext(name, Some(webUi))
+            case SparkWebUIUrl(webUi) =>
+              val url =
+                if (enableK8sCheck) {
+                  sparkUIHostMap.getOrElse(name, webUi)
+                } else {
+                  webUi
+                }
+              originator ! WebUIForContext(name, Some(url))
             case NoSparkWebUI => originator ! WebUIForContext(name, None)
             case SparkContextDead =>
               logger.info("SparkContext {} is dead", name)
@@ -327,6 +373,10 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     case StopContext(name) =>
       if (contexts contains name) {
         logger.info("Shutting down context {}", name)
+        // remove ingress of sparkui
+        val lowerName = name.toLowerCase
+        k8sClient.removeIngressRule(lowerName)
+
         val (contextActorRef, resultRef, _) = contexts(name)
         contexts.update(name, (contextActorRef, resultRef, true))
         cluster.down(contextActorRef.path.address)
@@ -353,6 +403,8 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
           // increase node resource
           val lowerName = name.toLowerCase
           resourceAllocator.recycleNodeResource(lowerName)
+          // remove ingress of sparkui
+          k8sClient.removeIngressRule(lowerName)
           Try(k8sClient.podLog(lowerName)) match {
             case Success(log) =>
               logger.error(s"error log from k8s:\n----start----\n$log\n----end----")
