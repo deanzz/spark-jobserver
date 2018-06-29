@@ -4,13 +4,9 @@ import akka.actor.{ActorRef, ActorSystem, AddressFromURIString, Props}
 import akka.pattern.ask
 import com.typesafe.config.{Config, ConfigFactory, ConfigValueFactory}
 import java.io.File
-
 import akka.cluster.Cluster
-import akka.util.Timeout
 import spark.jobserver.io.{BinaryType, DataFileDAO, JobDAO, JobDAOActor}
 import org.slf4j.LoggerFactory
-import spark.jobserver.AcoSeedIdentifyActor.GetAcoSeedActorRef
-
 import scala.collection.JavaConverters._
 import scala.concurrent.Await
 import scala.concurrent.duration._
@@ -101,22 +97,6 @@ object JobServer {
 
     val clusterAddress = config.getString("aco.cluster.seed-node")
     logger.info(s"clusterAddress of aco is $clusterAddress")
-
-   /* val acoSeedIdentifyActor = system.actorOf(Props(classOf[AcoSeedIdentifyActor], clusterAddress))
-    implicit val timeout = Timeout(15.second)
-    var acoSeedActorRefOpt: Option[ActorRef] = None
-    var times = 30
-    while (acoSeedActorRefOpt.isEmpty && times > 0) {
-      acoSeedActorRefOpt =
-        Await.result(acoSeedIdentifyActor ? GetAcoSeedActorRef, 15 second).asInstanceOf[Option[ActorRef]]
-      Thread.sleep(1000)
-      times = times - 1
-    }
-
-    if(acoSeedActorRefOpt.isEmpty){
-      logger.error(s"Cannot get ActorRef of acoSeedNode from address [$clusterAddress]")
-      sys.exit(1)
-    }*/
 
     val ctor = jobDaoClass.getDeclaredConstructor(Class.forName("com.typesafe.config.Config"))
     val jobDAO = ctor.newInstance(config).asInstanceOf[JobDAO]
