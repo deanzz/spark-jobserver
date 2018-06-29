@@ -263,7 +263,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
                   if (openPortSucceed) {
                     val (newRuleSucceed, sparkUIHost) = k8sClient.newIngressRule(name, service.name)
                     sparkUIHostMap += (name -> s"http://$sparkUIHost")
-                    openPortSucceed && newRuleSucceed
+                    newRuleSucceed
                   } else {
                     false
                   }
