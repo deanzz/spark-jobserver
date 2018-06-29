@@ -269,6 +269,7 @@ class JobManagerActor(daoActor: ActorRef, clusterAddressOpt: Option[String])
     }
 
     case KillJob(jobId: String) => {
+      logger.info(s"Start kill job $jobId")
       jobContext.sparkContext.cancelJobGroup(jobId)
       val resp = JobKilled(jobId, DateTime.now())
       statusActor ! resp
